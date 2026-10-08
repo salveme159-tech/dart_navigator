@@ -1,0 +1,46 @@
+{
+  "version": "3.0",
+  "product": "Disclosure Navigator",
+  "source_of_truth": "server/dart/engine.ts and server/dart/client.ts; this file mirrors the published calculation policy for agent knowledge.",
+  "defaults": {
+    "basis": "CFS",
+    "currency_unit": "KRW",
+    "render_unit": "억원",
+    "annualization": false,
+    "missing_input_policy": "refuse",
+    "rounding_policy": "keep_decimal_in_engine; round only for display"
+  },
+  "metrics": {
+    "revenue": {"kind":"reported","queryable":true,"formula":null},
+    "operatingProfit": {"kind":"reported","queryable":true,"formula":null},
+    "netIncome": {"kind":"reported","queryable":true,"formula":null,"policy":"CFS prefers the consolidated comprehensive income statement; source row must match the requested basis."},
+    "operatingMargin": {"kind":"calculated","queryable":true,"formula":"operatingProfit / revenue * 100","inputs":["operatingProfit","revenue"],"zero_denominator":"refuse"},
+    "operatingCashFlow": {"kind":"reported","queryable":true,"formula":null},
+    "investmentCashFlow": {"kind":"reported","queryable":true,"formula":null},
+    "financingCashFlow": {"kind":"reported","queryable":true,"formula":null},
+    "capex": {"kind":"calculated","queryable":true,"formula":"absolute_value(property_plant_equipment_acquisitions)","policy":"Use the DART cash-flow statement acquisition line only; do not infer from total investing cash flow."},
+    "freeCashFlow": {"kind":"calculated","queryable":true,"formula":"operatingCashFlow - capex","inputs":["operatingCashFlow","capex"],"policy":"Enabled only when both source lines are reported and CAPEX policy is satisfied."},
+    "netWorkingCapital": {"kind":"calculated","queryable":true,"formula":"currentAssets - currentLiabilities","inputs":["currentAssets","currentLiabilities"]},
+    "assetTurnover": {"kind":"calculated","queryable":false,"formula":"revenue / average(totalAssetsCurrent,totalAssetsPrior)","reason":"Period-matched average-asset implementation is not enabled."},
+    "netDebt": {"kind":"calculated","queryable":true,"formula":"debtGroup - cash - shortTermFinancialAssets","policy_id":"net_debt_v1","policy":"Exclude lease liabilities. Debt group includes short-term debt, current portions of long-term debt, long-term debt and bond-family instruments. Parent/detail bond rows must not be double counted. Group absence is zero only on a complete reconciled balance sheet."},
+    "debtRatio": {"kind":"calculated","queryable":true,"formula":"totalLiabilities / totalEquity * 100","inputs":["totalLiabilities","totalEquity"],"zero_denominator":"refuse"},
+    "currentRatio": {"kind":"calculated","queryable":true,"formula":"currentAssets / currentLiabilities * 100","inputs":["currentAssets","currentLiabilities"],"zero_denominator":"refuse"},
+    "interestCoverage": {"kind":"calculated","queryable":true,"formula":"operatingProfit / abs(interestExpense)","inputs":["operatingProfit","interestExpense"],"zero_denominator":"refuse","policy":"Use explicit interest expense only. Do not substitute total finance costs."},
+    "roe": {"kind":"calculated","queryable":true,"formula_cfs":"ownerNetIncome / average(ownerEquityCurrent,ownerEquityPrior) * 100","formula_ofs":"standaloneNetIncome / average(totalEquityCurrent,totalEquityPrior) * 100","period_policy":"Quarter and half-year use cumulative profit and are not annualized. Prior-period balance is required.","invalid_denominator":"<=0 refuse"},
+    "roa": {"kind":"calculated","queryable":true,"formula_cfs":"consolidatedNetIncome / average(totalAssetsCurrent,totalAssetsPrior) * 100","formula_ofs":"standaloneNetIncome / average(totalAssetsCurrent,totalAssetsPrior) * 100","period_policy":"Quarter and half-year use cumulative profit and are not annualized.","invalid_denominator":"<=0 refuse"},
+    "eps": {"kind":"reported","queryable":true,"formula":null,"period_policy":"For half-year/quarter cumulative requests, use the cumulative EPS field when available; never silently fall back to the 3-month field."},
+    "ebitda": {"kind":"calculated","queryable":true,"formula":"operatingProfit + depreciation + amortization","inputs":["operatingProfit","depreciation","amortization"],"missing_input_policy":"refuse"},
+    "per": {"kind":"calculated","queryable":false,"formula":"price / EPS","reason":"Requires time-matched market price source."},
+    "pbr": {"kind":"calculated","queryable":false,"formula":"price / BPS","reason":"Requires time-matched market price source."}
+  },
+  "period_policy": {
+    "income_statement": "IS/CIS quarterly and semiannual requests use cumulative fields for cumulative mode and 3-month fields for quarter mode.",
+    "cash_flow_statement": "CF follows the same cumulative/quarter field selection by requested mode.",
+    "balance_sheet": "BS always uses period-end point-in-time values.",
+    "q2": "2분기 means 3-month quarter mode; 상반기/반기는 cumulative first half.",
+    "q3": "3분기 means 3-month quarter mode; 3분기 누적 explicitly requests cumulative 1-9 months.",
+    "quarter_end": "Do not assume June/September for fiscal years with non-December year ends. The filing's actual periodStart/periodEnd governs."
+  },
+  "missing_state": ["reported","absent_in_complete_statement","unavailable"],
+  "security": {"api_key_input":"x-opendart-key","persist_default":"sessionStorage","production_fallback":false,"do_not_log":true}
+}

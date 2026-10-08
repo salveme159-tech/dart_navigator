@@ -1,7 +1,7 @@
 // DART 재무 데이터 처리 핵심 로직. 네트워크와 분리해 단위 테스트할 수 있도록 구성합니다.
 import { inflateRawSync } from "node:zlib";
 
-export const DISCLAIMER = "※ 본 순차입금 계산은 리스부채를 제외하고, 단기금융상품을 포함한 보수적 기준을 적용하였습니다.";
+export const DISCLAIMER = "※ 본 순차입금은 현금및현금성자산과 단기금융상품을 차감하고 리스부채를 제외하는 정책(net_debt_v1)을 적용합니다. 채권성 부채는 재무상태표 장부가액 기준으로 반영합니다.";
 
 export const ALIASES: Record<string, string> = {
   삼전: "삼성전자",
@@ -62,7 +62,7 @@ export function searchCorps(query: string, corps: Map<string, Corp>, limit = 12)
 export function unzipFirst(buf: Buffer): string {
   let e = buf.length - 22;
   while (e >= 0 && buf.readUInt32LE(e) !== 0x06054b50) e--;
-  if (e < 0) throw new Error("ZIP 형식이 아닙니다(키 오류 가능): " + buf.toString("utf8", 0, 200));
+  if (e < 0) throw new Error("ZIP 형식이 아닙니다.");
   const cd = buf.readUInt32LE(e + 16);
   const method = buf.readUInt16LE(cd + 10);
   const size = buf.readUInt32LE(cd + 20);
@@ -87,13 +87,18 @@ export type Row = {
   frmtrm_amount?: string;
   bfefrmtrm_amount?: string;
   rcept_no?: string;
+  account_id?: string;
 };
 
 const N = (s?: string) => (s ?? "").replace(/[\s·ㆍ]/g, "");
 const AMT = ["thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount"] as const;
 
 export function amountOf(r: Row, idx = 0, cum = false): number | null {
-  const v = ((cum && idx === 0 && r.thstrm_add_amount ? r.thstrm_add_amount : r[AMT[idx]]) ?? "").replace(/,/g, "").trim();
+  const cumulativeEligible = r.sj_div === "IS" || r.sj_div === "CIS" || r.sj_div === "CF";
+  const shouldUseCumulative = cum && idx === 0 && cumulativeEligible;
+  if (shouldUseCumulative && !r.thstrm_add_amount) return null;
+  const raw = (shouldUseCumulative ? r.thstrm_add_amount : r[AMT[idx]]) ?? "";
+  const v = raw.replace(/,/g, "").trim();
   const n = Number(v);
   return v === "" || Number.isNaN(n) ? null : n / 1e8;
 }
@@ -103,57 +108,139 @@ export const findRow = (rows: Row[], sj: string[], names: string[]) => {
   return rows.find((r) => sj.includes(r.sj_div ?? "") && target.includes(N(r.account_nm)) && !N(r.account_nm).includes("리스"));
 };
 
-export const findRowLike = (rows: Row[], sj: string[], names: string[]) => {
+export const findRowLike = (rows: Row[], sj: string[], names: string[], accountIds: string[] = []) => {
   const target = names.map(N);
   const candidates = rows.filter((r) => {
     const account = N(r.account_nm);
     return sj.includes(r.sj_div ?? "") && target.some((n) => account === n || account.includes(n)) && !account.includes("리스");
   });
-  // Broad aliases such as "수익" can accidentally match 금융수익/기타수익 before 매출액.
-  // Always prefer an exact normalized account match, then a prefix match, then a contains match.
+  const ids = new Set(accountIds);
   return candidates.sort((a, b) => {
+    const ai = a.account_id ?? "", bi = b.account_id ?? "";
+    const idScore = (x: string) => x && ids.has(x) ? 0 : x && x !== "-표준계정코드 미사용-" ? 1 : 2;
     const aa = N(a.account_nm), bb = N(b.account_nm);
-    const score = (x: string) => target.some((n) => x === n) ? 0 : target.some((n) => x.startsWith(n)) ? 1 : 2;
-    return score(aa) - score(bb) || aa.length - bb.length;
+    const nameScore = (x: string) => target.some((n) => x === n) ? 0 : target.some((n) => x.startsWith(n)) ? 1 : 2;
+    return idScore(ai) - idScore(bi) || nameScore(aa) - nameScore(bb) || aa.length - bb.length;
   })[0];
 };
 
 type Groups = [string, string[]][];
 const DEBT: Groups = [
   ["단기차입금", ["단기차입금"]],
-  ["유동성장기부채", ["유동성장기부채", "유동성장기차입금", "유동성사채", "유동성장기사채"]],
+  ["유동성장기부채", ["유동성장기부채", "유동성장기차입금", "유동성사채", "유동성장기사채", "비유동차입금의유동성대체부분"]],
   ["장기차입금", ["장기차입금"]],
-  ["사채", ["사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"]],
+  ["사채", ["사채", "회사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"]],
 ];
 const LIQ: Groups = [["현금및현금성자산", ["현금및현금성자산"]], ["단기금융상품", ["단기금융상품", "단기금융자산"]]];
 
-export type Item = { group: string; account: string; amount: number; sign: "+" | "−" };
+export type Item = { group: string; account: string; amount: number; sign: "+" | "−"; accountId?: string };
+
+export type NetDebtInputStatus = "reported" | "absent_in_complete_statement" | "unavailable";
+export type NetDebtItem = Item & { status: NetDebtInputStatus };
+
+export const NET_DEBT_POLICY_ID = "net_debt_v1";
+export const NET_DEBT_POLICY_LABEL = "현금및현금성자산·단기금융상품 차감 · 리스부채 제외 · 채권성 부채 장부가액 기준";
+
+const DEBT_ADJUSTMENT_EXCLUSIONS = ["사채상환할증금", "사채할인발행차금", "채권할인발행차금"];
+const DEBT_KEYWORDS = /차입|사채|회사채|전환사채|신주인수권부사채|교환사채|단기사채|금융부채/;
+// Totals and generic finance liabilities require manual classification; never silently count them as zero.
+const DEBT_TOTAL_EXCLUSIONS = /^(유동부채|비유동부채|부채총계|자본과부채총계)$/;
+const DEBT_MAPPING_IDS = new Set([
+  'ifrs-full:ShorttermBorrowings', 'ifrs-full:LongtermBorrowings',
+  'ifrs-full:CurrentPortionOfLongtermBorrowings', 'ifrs-full:Borrowings',
+  'dart:ShortTermBorrowings', 'dart:LongTermBorrowings',
+]);
+
+function isCompleteBalanceSheet(rows: Row[]) {
+  const bs = rows.filter((r) => r.sj_div === "BS");
+  const get = (names: string[]) => {
+    const row = findRowLike(bs, ["BS"], names);
+    return row ? amountOf(row) : null;
+  };
+  const assets = get(["자산총계"]);
+  const liabilities = get(["부채총계"]);
+  const equity = get(["자본총계"]);
+  if (assets === null || liabilities === null || equity === null) return false;
+  const currentAssets = get(["유동자산"]);
+  const nonCurrentAssets = get(["비유동자산"]);
+  const currentLiabilities = get(["유동부채"]);
+  const nonCurrentLiabilities = get(["비유동부채"]);
+  const tolerance = Math.max(1, Math.abs(assets) * 0.00001);
+  // A balance sheet is considered complete only when the primary totals and
+  // the current/non-current subtotals are all present and reconcile.
+  if (currentAssets === null || nonCurrentAssets === null || currentLiabilities === null || nonCurrentLiabilities === null) return false;
+  if (Math.abs((currentAssets + nonCurrentAssets) - assets) > tolerance) return false;
+  if (Math.abs((currentLiabilities + nonCurrentLiabilities) - liabilities) > tolerance) return false;
+  if (Math.abs((liabilities + equity) - assets) > tolerance) return false;
+  return true;
+}
 
 export function netDebt(rows: Row[], idx = 0) {
-  const items: Item[] = [];
+  const complete = isCompleteBalanceSheet(rows);
+  const items: NetDebtItem[] = [];
   const missing: string[] = [];
   const collect = (groups: Groups, sign: "+" | "−") => {
     let sum = 0;
-    for (const [g, names] of groups) {
-      let hit = false;
-      for (const n of names) {
-        const r = findRowLike(rows, ["BS"], [n]);
-        const a = r ? amountOf(r, idx) : null;
-        if (r && a !== null) {
-          items.push({ group: g, account: (r.account_nm ?? "").trim(), amount: a, sign });
-          sum += a;
-          hit = true;
-          break;
+    for (const [group, names] of groups) {
+      const matches = rows.filter((r) => {
+        if (r.sj_div !== "BS") return false;
+        const account = N(r.account_nm);
+        if (account.includes("리스") || DEBT_ADJUSTMENT_EXCLUSIONS.some((x) => account.includes(N(x)))) return false;
+        return names.some((n) => account === N(n) || account.startsWith(N(n)));
+      });
+      const detailPresent = matches.length > 1 && matches.some((r) => {
+        const a = N(r.account_nm);
+        return names.some((n) => N(n) !== a && a.endsWith(N(n)));
+      });
+      const seen = new Set<string>();
+      let groupSum = 0;
+      let reportedAny = false;
+      for (const r of matches) {
+        const aName = N(r.account_nm);
+        if (detailPresent && (aName === N("사채") || aName === N("회사채") || aName === N("유동성장기부채"))) continue;
+        const account = (r.account_nm ?? "").trim();
+        const dedupe = `${account}::${r.sj_div}`;
+        if (seen.has(dedupe)) continue;
+        const amount = amountOf(r, idx, false);
+        if (amount === null) {
+          missing.push(`공시된 계정의 금액을 읽을 수 없음: ${account}`);
+          continue;
         }
+        seen.add(dedupe);
+        groupSum += amount;
+        reportedAny = true;
+        items.push({ group, account, amount, sign, status: "reported", accountId: r.account_id });
       }
-      if (!hit) missing.push(g);
+      if (reportedAny) {
+        sum += groupSum;
+        continue;
+      }
+      if (complete) {
+        // 완전한 BS에서 해당 계정군이 존재하지 않으면 0으로 간주하되
+        // 화면에서는 '공시상 부재 → 0 처리'를 명시합니다.
+        items.push({ group, account: "공시 계정 부재", amount: 0, sign, status: "absent_in_complete_statement" });
+        continue;
+      }
+      missing.push(group);
+      items.push({ group, account: "확인 불가", amount: 0, sign, status: "unavailable" });
     }
     return sum;
   };
   const totalDebt = collect(DEBT, "+");
   const liquid = collect(LIQ, "−");
-  if (!items.some((i) => i.group === "현금및현금성자산")) {
-    return { ok: false as const, reason: "현금및현금성자산 계정을 찾지 못해 계산할 수 없습니다.", items, missing };
+  const bsRows = rows.filter((r) => r.sj_div === "BS");
+  const debtAliases = DEBT.flatMap(([, names]) => names.map(N));
+  const unmatchedDebtRows = bsRows.filter((r) => {
+    const a = N(r.account_nm);
+    const mappedByPolicy = debtAliases.some((n) => a === n || a.startsWith(n));
+    const id = r.account_id ?? "";
+    const suspiciousId = DEBT_MAPPING_IDS.has(id) || /(?:Borrowings|Debentures|BondsPayable)/i.test(id);
+    return !DEBT_TOTAL_EXCLUSIONS.test(a) && (DEBT_KEYWORDS.test(a) || suspiciousId) && !mappedByPolicy && !DEBT_ADJUSTMENT_EXCLUSIONS.some((x) => a.includes(N(x)));
+  });
+  if (unmatchedDebtRows.length) missing.push(`분류되지 않은 차입·사채 계정: ${unmatchedDebtRows.map((r) => r.account_nm).join(", ")}`);
+  if (!complete) missing.unshift("재무상태표 소계/총계 재조정 실패");
+  if (missing.length > 0) {
+    return { ok: false as const, reason: `순차입금 입력의 완전성 또는 차입금 분류를 검증할 수 없습니다: ${missing.join(", ")}`, items, missing, complete };
   }
   return {
     ok: true as const,
@@ -162,7 +249,10 @@ export function netDebt(rows: Row[], idx = 0) {
     liquid,
     items,
     missing,
+    complete,
     formula: "순차입금 = (단기차입금 + 유동성장기부채 + 장기차입금 + 사채) − (현금및현금성자산 + 단기금융상품)",
+    policyId: NET_DEBT_POLICY_ID,
+    policyLabel: NET_DEBT_POLICY_LABEL,
     disclaimer: DISCLAIMER,
   };
 }
@@ -198,11 +288,13 @@ export function periodCandidates(q: string, now = new Date()): Period[] {
   const y = parseYear(q);
   const cur = now.getFullYear();
   const year = y ?? cur;
+  if (y !== null && y < 2015) return [];
   if (/하반기/.test(q)) return [];
-  if (/상반기|반기/.test(q)) return [P(year, "half")];
   if (/2\s*분기/.test(q)) return [P(year, "half", "qtr")];
-  if (/1\s*분기/.test(q)) return [P(year, "q1")];
-  if (/3\s*분기/.test(q)) return [P(year, "q3")];
+  if (/상반기|반기/.test(q)) return [P(year, "half")];
+  if (/1\s*분기/.test(q)) return [P(year, "q1", /누적/.test(q) ? "cum" : "qtr")];
+  if (/3\s*분기\s*누적/.test(q)) return [P(year, "q3", "cum")];
+  if (/3\s*분기/.test(q)) return [P(year, "q3", "qtr")];
   if (/사업보고서|연간|작년|지난해|전년도/.test(q)) return [P(y ?? cur - 1, "annual")];
   if (y && y < cur) return [P(y, "annual")];
   const latest = [P(year, "q3"), P(year, "half"), P(year, "q1")];
@@ -220,7 +312,7 @@ export const baseDate = (p: Period) => `${p.year}.${{ annual: "12.31", half: "06
 export const modeLabel = (p: Period) =>
   p.kind === "annual" ? "연간" : p.mode === "qtr" ? "해당 분기(3개월)" : p.kind === "half" ? "상반기 누적(1~6월)" : p.kind === "q1" ? "1분기(1~3월)" : "3분기 누적(1~9월)";
 
-export type FinancialMetric = "revenue" | "operatingProfit" | "netIncome" | "operatingMargin" | "operatingCashFlow" | "investmentCashFlow" | "financingCashFlow" | "capex" | "netDebt" | "debtRatio" | "currentRatio" | "interestCoverage" | "roe" | "roa" | "eps" | "ebitda" | "per" | "pbr";
+export type FinancialMetric = "revenue" | "operatingProfit" | "netIncome" | "operatingMargin" | "operatingCashFlow" | "investmentCashFlow" | "financingCashFlow" | "capex" | "freeCashFlow" | "netWorkingCapital" | "assetTurnover" | "netDebt" | "debtRatio" | "currentRatio" | "interestCoverage" | "roe" | "roa" | "eps" | "ebitda" | "per" | "pbr";
 
 export type QueryAnalysis = "single" | "comparison" | "trend" | "cause";
 export type QueryOutput = "value" | "table" | "trend" | "comparison";
@@ -243,7 +335,7 @@ export type ParsedDartQuery = {
 const UNIQUE_METRICS = (items: FinancialMetric[]) => [...new Set(items)];
 
 export function parseDartQuery(question: string, now = new Date()): ParsedDartQuery {
-  const q = question.replace(/[？?]/g, "").trim();
+  const q = normalizeQuestion(question).replace(/[？?]/g, "").trim();
   const years = [...new Set((q.match(/20\d{2}/g) ?? []).map(Number))];
   const range = q.match(/(20\d{2})\s*(?:~|〜|-|–|—|부터|에서)\s*(20\d{2})/);
   const yearStart = range ? Number(range[1]) : null;
@@ -256,8 +348,9 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
   if (/하반기/.test(q)) kind = "annual";
   else if (/2\s*분기/.test(q)) { kind = "half"; mode = "qtr"; }
   else if (/상반기|반기/.test(q)) kind = "half";
-  else if (/1\s*분기/.test(q)) kind = "q1";
-  else if (/3\s*분기/.test(q)) kind = "q3";
+  else if (/1\s*분기/.test(q)) { kind = "q1"; mode = /누적/.test(q) ? "cum" : "qtr"; }
+  else if (/3\s*분기\s*누적/.test(q)) { kind = "q3"; mode = "cum"; }
+  else if (/3\s*분기/.test(q)) { kind = "q3"; mode = "qtr"; }
   else if (/사업보고서|연간|연도별|연간실적/.test(q)) kind = "annual";
   else if (/최신|최근 공시|가장 최근/.test(q)) kind = "latest";
 
@@ -268,6 +361,9 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
     [/투자활동현금흐름|투자현금흐름|투자활동.*현금/i, "investmentCashFlow"],
     [/재무활동현금흐름|재무현금흐름|재무활동.*현금/i, "financingCashFlow"],
     [/영업활동현금흐름|영업현금흐름|영업현금|영업활동.*현금/i, "operatingCashFlow"],
+    [/FCF|free.?cash.?flow|자유현금흐름/i, "freeCashFlow"],
+    [/운전자본|순운전자본|NWC/i, "netWorkingCapital"],
+    [/자산회전율|asset.?turnover/i, "assetTurnover"],
     [/capex|설비투자|자본적지출|유형자산.?취득/i, "capex"],
     [/순차입금|순부채/i, "netDebt"],
     [/부채비율/i, "debtRatio"],
@@ -281,7 +377,8 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
     [/PBR/i, "pbr"],
     [/매출액|매출|매출실적/i, "revenue"],
   ];
-  const metrics = UNIQUE_METRICS(metricHits.filter(([re]) => re.test(q)).map(([, metric]) => metric));
+  let metrics = UNIQUE_METRICS(metricHits.filter(([re]) => re.test(q)).map(([, metric]) => metric));
+  if (metrics.includes("operatingMargin")) metrics = metrics.filter((m) => m !== "operatingProfit");
   const ACCOUNT_ALIASES: Array<[string, string[]]> = [
     ["유동자산", ["유동자산"]], ["현금및현금성자산", ["현금및현금성자산"]], ["단기금융상품", ["단기금융상품", "단기금융자산"]],
     ["유동당기손익-공정가치측정금융자산", ["유동당기손익-공정가치측정금융자산"]], ["유동매출채권", ["유동매출채권"]],
@@ -311,7 +408,7 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
     ["재무활동현금흐름", ["재무활동으로인한현금흐름", "재무활동현금흐름", "재무활동순현금흐름"]],
   ];
   const nq = N(q);
-  const directAccount = [...ACCOUNT_ALIASES].sort((a,b) => Math.max(...b[1].map(N)).length - Math.max(...a[1].map(N)).length).find(([, aliases]) => aliases.some((a) => nq.includes(N(a))))?.[0] ?? null;
+  const directAccount = [...ACCOUNT_ALIASES].sort((a,b) => Math.max(...b[1].map((x) => N(x).length)) - Math.max(...a[1].map((x) => N(x).length))).find(([, aliases]) => aliases.some((a) => nq.includes(N(a))))?.[0] ?? null;
 
   const hasCauseIntent = /증가원인|감소원인|증가\s*이유|감소\s*이유|왜\s*(?:증가|감소|늘|줄)|원인|이유|왜/.test(q);
   const hasComparison = /비교|차이|대비|전년|전년대비|vs|증감|늘었|줄었|증가|감소|높아|낮아|차이가/.test(q) || years.length >= 2 || !!range;
@@ -345,6 +442,46 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
   };
 }
 
+export type FormulaSpec = {
+  label: string;
+  formula: string;
+  inputs: string[];
+  method: "source" | "derived";
+  queryable: boolean;
+  note?: string;
+};
+
+/**
+ * Single source of truth for metrics exposed by the demo and future ChatGPT Agent.
+ * A metric may be queryable only when the implementation is deterministic and all
+ * mandatory inputs are explicitly validated.
+ */
+export const FORMULAS: Record<FinancialMetric, FormulaSpec> = {
+  revenue: { label: "매출액", formula: "DART 공시값", inputs: ["revenue"], method: "source", queryable: true },
+  operatingProfit: { label: "영업이익", formula: "DART 공시값", inputs: ["operatingProfit"], method: "source", queryable: true },
+  netIncome: { label: "순이익", formula: "DART 공시값", inputs: ["netIncome"], method: "source", queryable: true },
+  operatingMargin: { label: "영업이익률", formula: "영업이익 ÷ 매출액 × 100", inputs: ["operatingProfit", "revenue"], method: "derived", queryable: true },
+  operatingCashFlow: { label: "영업활동현금흐름", formula: "DART 현금흐름표 공시값", inputs: ["operatingCashFlow"], method: "source", queryable: true },
+  investmentCashFlow: { label: "투자활동현금흐름", formula: "DART 현금흐름표 공시값", inputs: ["investmentCashFlow"], method: "source", queryable: true },
+  financingCashFlow: { label: "재무활동현금흐름", formula: "DART 현금흐름표 공시값", inputs: ["financingCashFlow"], method: "source", queryable: true },
+  capex: { label: "CAPEX", formula: "|유형자산 취득| + |무형자산 취득| + |투자부동산 취득|", inputs: ["capex"], method: "derived", queryable: true, note: "현금흐름표의 해당 자산 취득 현금유출 절대값 합산. 리스부채 상환 제외" },
+  freeCashFlow: { label: "FCF", formula: "영업활동현금흐름 − CAPEX", inputs: ["operatingCashFlow", "capex"], method: "derived", queryable: true, note: "CAPEX 정책 버전 1을 사용" },
+  netWorkingCapital: { label: "순운전자본", formula: "유동자산 − 유동부채", inputs: ["currentAssets", "currentLiabilities"], method: "derived", queryable: true },
+  assetTurnover: { label: "자산회전율", formula: "매출액 ÷ 평균총자산", inputs: ["revenue", "averageAssets"], method: "derived", queryable: false, note: "평균총자산의 기간 기준을 보강한 뒤 활성화" },
+  netDebt: { label: "순차입금", formula: "(단기차입금 + 유동성장기부채 + 장기차입금 + 사채) − (현금및현금성자산 + 단기금융상품)", inputs: ["shortTermDebt", "currentPortionLongTermDebt", "longTermDebt", "bonds", "cash", "shortTermFinancialAssets"], method: "derived", queryable: true, note: "리스부채 제외. 완전한 BS에서 계정 부재는 0 처리하되 표시하며, BS 완전성 자체가 확인되지 않으면 거부" },
+  debtRatio: { label: "부채비율", formula: "부채총계 ÷ 자본총계 × 100", inputs: ["totalLiabilities", "totalEquity"], method: "derived", queryable: true },
+  currentRatio: { label: "유동비율", formula: "유동자산 ÷ 유동부채 × 100", inputs: ["currentAssets", "currentLiabilities"], method: "derived", queryable: true },
+  interestCoverage: { label: "이자보상배율", formula: "영업이익 ÷ 이자비용", inputs: ["operatingProfit", "interestExpense"], method: "derived", queryable: true, note: "이자비용이 0이면 계산하지 않음" },
+  roe: { label: "ROE", formula: "지배기업 소유주 귀속 순이익 ÷ 평균 지배기업 소유주지분 × 100", inputs: ["ownerNetIncome", "averageOwnerEquity"], method: "derived", queryable: true, note: "연환산하지 않음. 반기/분기 누적값은 누적 ROE로 표시" },
+  roa: { label: "ROA", formula: "연결 당기순이익 ÷ 평균총자산 × 100", inputs: ["consolidatedNetIncome", "averageAssets"], method: "derived", queryable: true, note: "연환산하지 않음. 반기/분기 누적값은 누적 ROA로 표시" },
+  eps: { label: "EPS", formula: "DART 주당순손익 공시값", inputs: ["eps"], method: "source", queryable: true },
+  ebitda: { label: "EBITDA", formula: "영업이익 + 감가상각비 + 무형자산상각비", inputs: ["operatingProfit", "depreciation", "amortization"], method: "derived", queryable: true, note: "감가상각비와 무형자산상각비가 모두 확인돼야 계산" },
+  per: { label: "PER", formula: "주가 ÷ EPS", inputs: ["sharePrice", "eps"], method: "derived", queryable: false, note: "DART 재무제표만으로 현재 주가를 확정하지 않으므로 비활성" },
+  pbr: { label: "PBR", formula: "주가 ÷ BPS", inputs: ["sharePrice", "bps"], method: "derived", queryable: false, note: "DART 재무제표만으로 현재 주가를 확정하지 않으므로 비활성" },
+};
+
+export const QUERYABLE_METRICS = (Object.keys(FORMULAS) as FinancialMetric[]).filter((m) => FORMULAS[m].queryable) as FinancialMetric[];
+
 export const METRIC_LABELS: Record<FinancialMetric, string> = {
   revenue: "매출액",
   operatingProfit: "영업이익",
@@ -354,6 +491,9 @@ export const METRIC_LABELS: Record<FinancialMetric, string> = {
   investmentCashFlow: "투자활동현금흐름",
   financingCashFlow: "재무활동현금흐름",
   capex: "CAPEX",
+  freeCashFlow: "FCF",
+  netWorkingCapital: "순운전자본",
+  assetTurnover: "자산회전율",
   netDebt: "순차입금",
   debtRatio: "부채비율",
   currentRatio: "유동비율",
@@ -366,21 +506,25 @@ export const METRIC_LABELS: Record<FinancialMetric, string> = {
   pbr: "PBR",
 };
 
-export const metricConfig: Record<FinancialMetric, { sj: string[]; names: string[] }> = {
-  revenue: { sj: ["IS", "CIS"], names: ["매출액", "수익(매출액)", "영업수익", "매출"] },
-  operatingProfit: { sj: ["IS", "CIS"], names: ["영업이익", "영업이익(손실)"] },
-  netIncome: { sj: ["CIS", "IS"], names: ["반기순손익", "분기순손익", "당기순이익", "당기순이익(손실)", "연결당기순이익", "지배기업의소유주에게귀속되는당기순이익", "지배기업소유주지분당기순이익"] },
-  operatingCashFlow: { sj: ["CF"], names: ["영업활동으로인한현금흐름", "영업활동현금흐름", "영업활동순현금흐름"] },
+export const metricConfig: Record<FinancialMetric, { sj: string[]; names: string[]; accountIds?: string[] }> = {
+  revenue: { sj: ["IS", "CIS"], names: ["매출액", "수익(매출액)", "영업수익", "매출"], accountIds: ["ifrs-full_Revenue", "ifrs_Revenue"] },
+  operatingProfit: { sj: ["IS", "CIS"], names: ["영업이익", "영업이익(손실)"], accountIds: ["ifrs-full_ProfitLossFromOperatingActivities", "ifrs_ProfitLossFromOperatingActivities"] },
+  netIncome: { sj: ["CIS", "IS"], names: ["반기순손익", "분기순손익", "당기순이익", "당기순이익(손실)", "연결당기순이익", "지배기업의소유주에게귀속되는당기순이익", "지배기업소유주지분당기순이익"], accountIds: ["ifrs-full_ProfitLoss", "ifrs_ProfitLoss"] },
+  operatingCashFlow: { sj: ["CF"], names: ["영업활동으로인한현금흐름", "영업활동현금흐름", "영업활동순현금흐름"], accountIds: ["ifrs-full_CashFlowsFromUsedInOperatingActivities", "ifrs_CashFlowsFromUsedInOperatingActivities"] },
   investmentCashFlow: { sj: ["CF"], names: ["투자활동으로인한현금흐름", "투자활동현금흐름", "투자활동순현금흐름"] },
   financingCashFlow: { sj: ["CF"], names: ["재무활동으로인한현금흐름", "재무활동현금흐름", "재무활동순현금흐름"] },
+  operatingMargin: { sj: ["IS", "CIS"], names: [] },
   capex: { sj: ["CF"], names: ["유형자산의취득", "유형자산취득"] },
+  freeCashFlow: { sj: ["CF", "IS", "CIS"], names: [] },
+  netWorkingCapital: { sj: ["BS"], names: [] },
+  assetTurnover: { sj: ["BS", "IS", "CIS"], names: [] },
   netDebt: { sj: ["BS"], names: [] },
   debtRatio: { sj: ["BS"], names: ["부채비율"] },
   currentRatio: { sj: ["BS"], names: ["유동비율"] },
   interestCoverage: { sj: ["IS", "CIS"], names: [] },
   roe: { sj: ["BS", "IS", "CIS"], names: [] },
   roa: { sj: ["BS", "IS", "CIS"], names: [] },
-  eps: { sj: ["IS", "CIS"], names: ["기본주당순손익", "기본주당순이익", "희석주당순손익"] },
+  eps: { sj: ["IS", "CIS"], names: ["기본주당순손익", "기본주당순이익", "희석주당순손익"], accountIds: ["ifrs-full_BasicEarningsLossPerShare", "ifrs-full_DilutedEarningsLossPerShare"] },
   ebitda: { sj: ["IS", "CIS"], names: [] },
   per: { sj: [], names: [] },
   pbr: { sj: [], names: [] },

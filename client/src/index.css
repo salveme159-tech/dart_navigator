@@ -591,3 +591,44 @@ button:focus-visible, input:focus-visible { outline: 2px solid #22c7a5; outline-
 .natural-query-guide strong { color: #d7f5ef; font-size: 9px; }
 .natural-query-guide b { color: #b8ded8; }
 .natural-query-guide small { color: #779b97; font-size: 8px; }
+
+/* 2026 competition-mode visual system: Apple-like, neutral, evidence-first */
+:root { --background: #f5f5f7; --foreground: #1d1d1f; --card: #ffffff; --card-foreground: #1d1d1f; --primary: #0a5cff; --primary-foreground: #fff; --border: #e5e5ea; --input: #d2d2d7; --ring: #0a5cff; }
+body { background: #f5f5f7; color: #1d1d1f; }
+.app-shell { background: #f5f5f7; }
+.sidebar { background: #ffffff; color: #606064; border-right: 1px solid #e5e5ea; }
+.sidebar .brand-lockup { color: #1d1d1f; }
+.sidebar .brand-mark { border-color: #d2d2d7; }
+.sidebar .brand-mark span { background: #0a5cff; }
+.workspace-switch { border-color: #e5e5ea; background: #fbfbfd; }
+.workspace-avatar { background: #eef4ff; border-color: #d9e6ff; color: #0a5cff; }
+.side-nav button { color: #6e6e73; }
+.side-nav button:hover { background: #f5f5f7; color: #1d1d1f; }
+.side-nav button.active { color: #0a5cff; background: #eef4ff; box-shadow: inset 3px 0 0 #0a5cff; }
+.connection-status { border-color: #e5e5ea; }
+.connection-status strong { color: #1d1d1f; }
+.primary-button { background: #0a5cff; color: #fff; box-shadow: 0 8px 20px rgba(10,92,255,.18); }
+.primary-button:hover { background: #004fe6; }
+.outline-button:hover, .top-refresh:hover { border-color: #0a5cff; color: #0a5cff; }
+.status-dot { background: #34c759; box-shadow: 0 0 0 3px rgba(52,199,89,.12); }
+.topbar { background: rgba(245,245,247,.92); backdrop-filter: blur(18px); border-bottom-color: #e5e5ea; }
+.content-container { max-width: 1320px; }
+.metric-card, .hero-query, .answer-panel, .library-panel, .terms-list, .term-detail, .compare-panel, .company-picker-wrap { border-color: #e5e5ea; box-shadow: 0 8px 24px rgba(0,0,0,.035); }
+.metric-card.active { border-color: #a7c4ff; box-shadow: 0 10px 28px rgba(10,92,255,.10); }
+.ask-workspace { background: #fff; border-color: #e5e5ea; box-shadow: 0 12px 34px rgba(0,0,0,.045); }
+.ask-input-large:focus-within { border-color: #0a5cff; box-shadow: 0 0 0 4px rgba(10,92,255,.10); }
+.query-context { background: #fff; border-color: #e5e5ea; }
+.live-answer { border-color: #d8e1f0; box-shadow: 0 16px 36px rgba(25,45,90,.06); }
+.live-tag { color: #0a5cff; background: #eef4ff; }
+.live-answer-head h3 em { color: #0a5cff; }
+.verification-strip { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 2px; }
+.verification-strip span { font-size:9px; font-weight:750; color:#52715b; background:#f0f8f2; border:1px solid #d9eddc; border-radius:999px; padding:5px 7px; }
+.live-actions { display:flex; align-items:center; gap:6px; }
+.term-detail-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }
+.term-example { margin-top:16px !important; color:#7b7b80 !important; font-size:10px !important; }
+.agent-status { display:inline-flex; align-items:center; gap:6px; color:#6e6e73; font-size:9px; font-weight:800; letter-spacing:.08em; }
+.agent-status .status-dot { width:6px; height:6px; }
+@media print { .sidebar, .topbar, .live-actions { display:none !important; } .content-scroll { overflow:visible !important; } }
+
+/* OpenDART connection settings */
+.api-key-box{border:1px solid #e5e7eb;background:#f8fafc;border-radius:16px;padding:16px;margin:10px 0 12px}.api-key-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;margin-bottom:10px}.api-key-box input{width:100%;height:44px;border:1px solid #d9dee7;border-radius:10px;padding:0 12px;background:#fff;font:500 14px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em}.api-key-box small{display:block;color:#6b7280;font-size:12px;line-height:1.45;margin-top:8px}.remember-toggle{display:flex;align-items:center;gap:9px;font-size:13px;color:#374151;margin:10px 0 14px}.remember-toggle input{accent-color:#111827}.api-key-actions{display:flex;justify-content:space-between;gap:10px}.api-help{display:grid;gap:4px;border-top:1px solid #eef0f3;margin-top:16px;padding-top:14px;color:#6b7280;font-size:12px}.api-help strong{color:#111827}.api-help a{color:#2563eb;font-weight:700;text-decoration:none}.connection-status.demo .status-dot{background:#94a3b8}.connection-status.connected .status-dot{background:#16a34a}
