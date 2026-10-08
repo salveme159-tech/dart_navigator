@@ -1,14 +1,5 @@
 # Disclosure Navigator
 
-React / Express / tRPC / Drizzle starter, adapted from the Sandbox web-db-user template.
+공모전 제출용 웹앱입니다. 설치 및 실행은 [docs/03_DEVELOPER_GUIDE.md](docs/03_DEVELOPER_GUIDE.md), 문서 전체 안내는 [docs/README.md](docs/README.md)를 참고하세요.
 
-- `pnpm dev`: development server; honors `PORT` (default 3000).
-- `pnpm build` / `pnpm start`: build and serve `dist/index.js` and `dist/public/`.
-- `pnpm db:migrate`: apply checked-in migrations. `pnpm db:push`: generate and apply new schema changes.
-- `pnpm check` / `pnpm test`: types and application tests.
-
-Start with the Webdev skill's default-template guide. Platform login, storage, payments and service contracts live in its shared references; read the relevant capability before extending its helper.
-
-`server/_core/publicConfig.ts` exposes only named public runtime values. Private keys stay server-side. The platform serves managed `/manus-storage/` assets; the application does not register a second proxy.
-
-Platform configuration is readable and editable through `webdev.config`. Default settings are initial values, not enforced constraints. The agent may modify the files, commands and configuration or follow the flexible guide for another stack.
+**주의:** 제출 전 `pnpm check`, `pnpm test`, `pnpm build` 및 브라우저 E2E를 직접 검증해야 합니다.
