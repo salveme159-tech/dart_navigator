@@ -1,0 +1,19 @@
+{
+  "version": "6.0.0-contest-winner",
+  "principles": {
+    "zeroHallucination": "AI가 새로운 사실을 마음대로 추가하지 않으며, 공시로 확인되지 않는 변동 사유는 '원인은 공시로 특정되지 않는다'로 표기함",
+    "noArbitraryAnnualization": "'기간 순이익/평균자본'은 연율(×4)을 곱하여 연간 ROE로 쓰지 않음 (TTM 지표를 별도 병기)",
+    "q4Derivation": "4분기(4Q) 단기 실적 = 사업보고서(연간 누적) - 3분기보고서(9개월 누적) 조건부 차감 검증",
+    "subsidiaryDecomposition": "자회사·연결조정 영업이익 몫 = 연결 영업이익(CFS) - 본체 별도 영업이익(OFS)"
+  },
+  "formulas": {
+    "GPM": "(매출총이익 / 매출액) * 100",
+    "OPM": "(영업이익 / 매출액) * 100",
+    "SUBSIDIARY_OP": "연결 영업이익 - 별도 영업이익",
+    "PERIOD_ROE": "(당기 분기 순이익 / ((기초자본 + 기말자본) / 2)) * 100",
+    "TTM_ROE": "(최근 4개 분기 합산 순이익 / 평균자본) * 100",
+    "PERIOD_ROA": "(당기 분기 순이익 / 평균자산) * 100",
+    "PER_TTM": "시가총액(Yahoo Finance) / 최근 4개 분기 합산 순이익(DART)",
+    "PBR_LATEST": "시가총액(Yahoo Finance) / 최근 분기 자본총계(DART)"
+  }
+}
