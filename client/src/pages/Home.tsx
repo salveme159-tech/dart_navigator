@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Search,
   Plus,
@@ -380,7 +380,7 @@ export default function Home() {
         setAllCorpMaster(masterList);
       }
 
-      const initialTargets = ["대한전선", "가온전선", "삼성전자", "LS"];
+      const initialTargets = ["대한전선", "가온전선"];
       const loaded: CompanyFinancialRecord[] = [];
       for (const name of initialTargets) {
         const res = await fetchLiveDartCompanyRecord(name, apiKey);
@@ -853,11 +853,35 @@ export default function Home() {
         )}
 
         {!currentCompany ? (
-          <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center space-y-3">
-            <RefreshCw className="w-6 h-6 animate-spin mx-auto text-emerald-700" />
-            <div className="text-base font-bold text-slate-800">
-              OpenDART에서 실시간 공시 데이터를 불러오고 있습니다...
-            </div>
+          <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center space-y-4">
+            {isRefreshingApi ? (
+              <>
+                <RefreshCw className="w-6 h-6 animate-spin mx-auto text-emerald-700" />
+                <div className="text-base font-bold text-slate-800">
+                  OpenDART에서 실시간 공시 데이터를 불러오고 있습니다... (최대 3~5초 소요)
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-base font-bold text-rose-700">
+                  {apiStatusMessage || "OpenDART API 응답을 받지 못했습니다. API 인증키(40자리)가 정확한지 확인해 주세요."}
+                </div>
+                <div className="flex items-center justify-center gap-2 pt-2">
+                  <button
+                    onClick={() => handleFetchOrRegisterCompany("대한전선")}
+                    className="px-4 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold"
+                  >
+                    다시 시도
+                  </button>
+                  <button
+                    onClick={() => { setApiInputDraft(apiKey); setIsApiGateOpen(true); }}
+                    className="px-4 py-2 rounded-xl bg-slate-800 text-white text-xs font-bold"
+                  >
+                    API 인증키 재입력
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         ) : (
           <>
