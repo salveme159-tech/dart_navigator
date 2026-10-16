@@ -1,0 +1,349 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowUpRight,
+  BookOpen,
+  Building2,
+  Calculator,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleHelp,
+  FileText,
+  Filter,
+  GitCompare,
+  LayoutDashboard,
+  KeyRound,
+  MessageSquareText,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  RefreshCw,
+  Search,
+  Send,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from "lucide-react";
+import LiveDartPanel from "../components/LiveDartPanel";
+import { trpc } from "../lib/trpc";
+import { clearDartKey, getStoredDartKey, saveDartKey, validateDartKeyFormat } from "../lib/dartKey";
+
+type View = "overview" | "ask" | "compare" | "sources" | "terms" | "companies";
+type AskMode = "natural" | "category";
+type MetricKey =
+  | "revenue" | "operatingProfit" | "netIncome" | "operatingMargin"
+  | "operatingCashFlow" | "investmentCashFlow" | "financingCashFlow"
+  | "capex" | "freeCashFlow" | "workingCapital" | "debt" | "debtRatio"
+  | "debtDependency" | "currentRatio" | "assetTurnover" | "ebitda"
+  | "currentAssets" | "cash" | "shortTermFinancial" | "receivables" | "inventory" | "payables"
+  | "totalAssets" | "totalLiabilities" | "totalEquity" | "financialCost"
+  | "netWorkingCapital" | "netDebt" | "interestCoverage" | "roe" | "roa" | "eps" | "per" | "pbr";
+type Basis = "CFS" | "OFS";
+type PeriodKey = "latest" | "annual" | "half" | "q1" | "q3";
+
+type Term = {
+  key: string;
+  label: string;
+  definition: string;
+  formula: string;
+  note?: string;
+  queryable?: boolean;
+};
+
+const QUERYABLE_KEYS = new Set([
+  "revenue", "operatingProfit", "netIncome", "operatingMargin", "operatingCashFlow", "investmentCashFlow", "financingCashFlow",
+  "capex", "freeCashFlow", "workingCapital", "debt", "debtRatio", "debtDependency", "currentRatio", "ebitda",
+  "currentAssets", "cash", "shortTermFinancial", "receivables", "inventory", "payables", "totalAssets", "totalLiabilities", "totalEquity", "financialCost",
+]);
+const isQueryableTerm = (term: Term) => term.queryable ?? QUERYABLE_KEYS.has(term.key);
+
+const CORE_METRICS: MetricKey[] = ["revenue", "operatingProfit", "netIncome"];
+const CUSTOM_OPTIONS: MetricKey[] = ["operatingCashFlow", "capex", "freeCashFlow", "workingCapital", "debt", "debtRatio"];
+const COMPARE_OPTIONS: MetricKey[] = [
+  "revenue", "operatingProfit", "netIncome", "operatingMargin", "operatingCashFlow", "investmentCashFlow", "financingCashFlow",
+  "capex", "freeCashFlow", "workingCapital", "debt", "debtRatio", "debtDependency", "currentRatio", "assetTurnover", "ebitda",
+  "currentAssets", "cash", "shortTermFinancial", "receivables", "inventory", "payables", "totalAssets", "totalLiabilities", "totalEquity", "financialCost",
+];
+
+const TERMS: Term[] = [
+  { key: "revenue", label: "매출액", definition: "기업이 제품·상품·서비스를 판매하고 얻은 수익입니다.", formula: "공시 손익계산서의 매출액(또는 수익)" },
+  { key: "operatingProfit", label: "영업이익", definition: "본업에서 발생한 수익에서 본업 관련 비용을 차감한 이익입니다.", formula: "영업이익 = 매출액 − 매출원가 − 판매비와관리비" },
+  { key: "netIncome", label: "순이익", definition: "영업외손익과 법인세 등을 반영한 최종 이익입니다.", formula: "순이익 = DART 손익계산서의 당기순손익" },
+  { key: "operatingCashFlow", label: "영업활동현금흐름", definition: "영업활동에서 실제로 유입·유출된 현금의 순액입니다.", formula: "현금흐름표의 영업활동으로 인한 현금흐름" },
+  { key: "investmentCashFlow", label: "투자활동현금흐름", definition: "설비·투자자산 등의 투자활동에서 발생한 현금의 순액입니다.", formula: "현금흐름표의 투자활동으로 인한 현금흐름" },
+  { key: "financingCashFlow", label: "재무활동현금흐름", definition: "차입·상환·증자·배당 등 재무활동에서 발생한 현금의 순액입니다.", formula: "현금흐름표의 재무활동으로 인한 현금흐름" },
+  { key: "capex", label: "CAPEX", definition: "유형자산·무형자산·투자부동산 취득에 지출한 현금을 합산한 투자액입니다.", formula: "CAPEX = |유형자산 취득| + |무형자산 취득| + |투자부동산 취득|", note: "리스부채 상환은 포함하지 않습니다." },
+  { key: "freeCashFlow", label: "FCF", definition: "영업활동에서 창출한 현금 중 자본적 지출을 제외하고 남은 현금입니다.", formula: "FCF = 영업활동현금흐름 − CAPEX" },
+  { key: "workingCapital", label: "운전자본", definition: "일상적인 영업활동을 위해 운용되는 순유동자금 규모입니다.", formula: "운전자본 = 유동자산 − 유동부채" },
+  { key: "debt", label: "차입금", definition: "현금성자산을 차감하지 않은 이자부 차입·사채의 합계입니다.", formula: "차입금 = 단기차입금 + 유동성장기부채 + 장기차입금 + 사채", note: "리스부채와 현금·단기금융상품은 제외·차감하지 않습니다." },
+  { key: "debtRatio", label: "부채비율", definition: "자기자본 대비 부채가 얼마나 있는지를 보여주는 안정성 지표입니다.", formula: "부채비율 = 부채총계 ÷ 자본총계 × 100" },
+  { key: "debtDependency", label: "차입금 의존도", definition: "총자산 중 차입금이 차지하는 비중입니다.", formula: "차입금 의존도 = 차입금 ÷ 자산총계 × 100" },
+  { key: "currentAssets", label: "유동자산", definition: "1년 이내 현금화하거나 정상 영업주기 내 회수할 것으로 예상되는 자산입니다.", formula: "재무상태표의 유동자산" },
+  { key: "cash", label: "현금및현금성자산", definition: "즉시 현금화할 수 있는 현금과 현금성 자산입니다.", formula: "재무상태표의 현금및현금성자산" },
+  { key: "shortTermFinancial", label: "단기금융상품", definition: "단기간 운용되는 금융상품입니다.", formula: "재무상태표의 단기금융상품" },
+  { key: "receivables", label: "매출채권", definition: "제품·서비스 판매 후 아직 회수하지 않은 금액입니다.", formula: "재무상태표의 매출채권" },
+  { key: "payables", label: "매입채무", definition: "상품·원재료 등을 외상으로 매입하고 아직 지급하지 않은 금액입니다.", formula: "재무상태표의 매입채무" },
+  { key: "inventory", label: "재고자산", definition: "판매를 위해 보유하거나 생산과정에 있는 자산입니다.", formula: "재무상태표의 재고자산" },
+  { key: "totalLiabilities", label: "부채총계", definition: "기업이 부담하는 모든 부채의 합계입니다.", formula: "재무상태표의 부채총계" },
+  { key: "totalEquity", label: "자본총계", definition: "주주지분과 비지배지분을 포함한 순자산입니다.", formula: "재무상태표의 자본총계" },
+  { key: "financialCost", label: "금융원가", definition: "차입금 이자 등 금융활동에서 발생한 비용입니다.", formula: "손익계산서의 금융원가" },
+  { key: "longTermDebt", label: "장기차입금", definition: "상환기일이 1년을 초과하는 차입금입니다.", formula: "재무상태표의 장기차입금", queryable: true },
+  { key: "currentRatio", label: "유동비율", definition: "유동자산으로 유동부채를 얼마나 감당할 수 있는지를 보여줍니다.", formula: "유동비율 = 유동자산 ÷ 유동부채 × 100" },
+  { key: "ebitda", label: "EBITDA", definition: "이자·세금·감가상각비 차감 전 이익입니다.", formula: "EBITDA = 영업이익 + 감가상각비 + 무형자산상각비" },
+];
+
+const periodLabels: Record<PeriodKey, string> = {
+  latest: "최신 보고서",
+  q1: "1분기",
+  half: "반기",
+  q3: "3분기",
+  annual: "사업보고서",
+};
+const basisLabels: Record<Basis, string> = { CFS: "연결 기준", OFS: "별도 기준" };
+const metricLabels: Record<MetricKey, string> = {
+  revenue: "매출액", operatingProfit: "영업이익", netIncome: "순이익", operatingMargin: "영업이익률",
+  operatingCashFlow: "영업활동현금흐름", investmentCashFlow: "투자활동현금흐름", financingCashFlow: "재무활동현금흐름",
+  capex: "CAPEX", freeCashFlow: "FCF", workingCapital: "운전자본", debt: "차입금", debtRatio: "부채비율",
+  debtDependency: "차입금 의존도", currentRatio: "유동비율", assetTurnover: "자산회전율", ebitda: "EBITDA",
+  currentAssets: "유동자산", cash: "현금및현금성자산", shortTermFinancial: "단기금융상품", receivables: "매출채권", inventory: "재고자산", payables: "매입채무",
+  totalAssets: "자산총계", totalLiabilities: "부채총계", totalEquity: "자본총계", financialCost: "금융원가",
+  netWorkingCapital: "운전자본", netDebt: "차입금", interestCoverage: "이자보상배율", roe: "ROE", roa: "ROA", eps: "EPS", per: "PER", pbr: "PBR",
+};
+
+const DEMO_SNAPSHOT: { company: string; period: string; basis: string; demo: boolean; metrics: Partial<Record<MetricKey, { value: number; unit: string; citation?: string } | null>> } = {
+  company: "대한전선",
+  period: "2026 반기보고서 · 상반기 누적(1~6월) · 기준일 2026.06.30",
+  basis: "연결 기준",
+  demo: true,
+  metrics: {
+    revenue: { value: 22820.29, unit: "억원" },
+    operatingProfit: { value: 1212.53, unit: "억원" },
+    operatingMargin: { value: 1212.53 / 22820.29 * 100, unit: "%" },
+    netIncome: { value: -950, unit: "억원" },
+    operatingCashFlow: { value: -3179, unit: "억원" },
+    capex: { value: 1175, unit: "억원" },
+    freeCashFlow: { value: -4354, unit: "억원" },
+    debt: { value: 11876, unit: "억원" },
+  },
+};
+
+
+function money(value: number | null | undefined, unit = "억원") {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (unit === "%") return `${value.toFixed(1)}%`;
+  return `${Math.round(value).toLocaleString("ko-KR")} ${unit}`;
+}
+
+function useStoredState<T>(key: string, initial: T) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+  }, [key, value]);
+  return [value, setValue] as const;
+}
+
+function LogoMark() {
+  return <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>;
+}
+
+function MetricCard({ label, value, unit, active, onClick, addMode, onAdd, onRemove }: {
+  label: string; value?: number | null; unit?: string; active?: boolean; onClick?: () => void; addMode?: boolean; onAdd?: () => void; onRemove?: () => void;
+}) {
+  if (addMode) return <button className="metric-card metric-add" onClick={onAdd}><Plus size={18} /><strong>지표 추가</strong><span>커스텀 KPI를 선택하세요</span></button>;
+  return <div className={`metric-card ${active ? "active" : ""}`}>
+    <button className="metric-card-body" onClick={onClick}><div className="metric-top"><span>{label}</span></div><div className="metric-value">{money(value, unit)}</div><div className="metric-delta">최근 공시 기준 · 원문 연결</div></button>
+    {onRemove && <button className="metric-remove" onClick={(e) => { e.stopPropagation(); onRemove(); }} aria-label={`${label} 삭제`} title="삭제"><X size={14} /></button>}
+  </div>;
+}
+
+function CompanyPicker({ companies, active, onChange, onAdd }: { companies: string[]; active: string; onChange: (company: string) => void; onAdd: () => void }) {
+  return <div className="company-picker-wrap"><div className="company-picker-label">기준 기업</div><div className="company-picker-row"><select value={active} onChange={(e) => onChange(e.target.value)}>{companies.map((c) => <option key={c}>{c}</option>)}</select><button className="outline-button" onClick={onAdd}><Plus size={15} /> 타 기업 추가</button></div></div>;
+}
+
+function CompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: (company: string) => void }) {
+  const [search, setSearch] = useState("");
+  const q = trpc.dart.searchCompanies.useQuery({ query: search, limit: 10 }, { enabled: search.trim().length >= 2 && Boolean(getStoredDartKey()), retry: false, staleTime: 60000 });
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal-card" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-head"><div><p className="eyebrow dark">COMPANY MONITORING</p><h2>타 기업 추가</h2><p>기업명을 검색하고 추가하면 이 브라우저의 모니터링 목록에 계속 포함됩니다.</p></div><button className="icon-button" onClick={onClose} aria-label="닫기"><X size={18} /></button></div>
+    <div className="search-input modal-search"><Search size={16} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="예: LS ELECTRIC, 삼성전자, 한국콜마" /></div>
+    <div className="company-results">{q.isLoading && <div className="empty-result">기업목록 조회 중…</div>}{q.error && <div className="empty-result">조회 오류: {q.error.message}</div>}{!q.isLoading && search.length >= 2 && q.data?.length === 0 && <div className="empty-result">일치하는 DART 기업이 없습니다.</div>}{q.data?.map((item) => <button key={item.code} className="company-result" onClick={() => { onAdded(item.name); onClose(); }}><div><strong>{item.name}</strong><span>{item.stock || "비상장"}</span></div><Plus size={16} /></button>)}</div>
+    <div className="modal-note"><CircleHelp size={14} /> {getStoredDartKey() ? "추가 기업은 최신 OpenDART 공시에서 다시 조회합니다." : "체험 모드에서는 기업 검색을 사용할 수 없습니다. 먼저 OpenDART 인증키를 연결하세요."}</div>
+  </div></div>;
+}
+
+function MetricPicker({ existing, onAdd, onClose }: { existing: MetricKey[]; onAdd: (metric: MetricKey) => void; onClose: () => void }) {
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal-card small-modal" onMouseDown={(e) => e.stopPropagation()}><div className="modal-head"><div><p className="eyebrow dark">CUSTOM KPI</p><h2>커스텀 지표 추가</h2></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div><div className="term-picker-list">{CUSTOM_OPTIONS.map((key) => <button key={key} className={`term-pick ${existing.includes(key) ? "disabled" : ""}`} disabled={existing.includes(key)} onClick={() => onAdd(key)}><span>{metricLabels[key]}</span><small>{existing.includes(key) ? "이미 추가됨" : "대시보드에 추가"}</small><ChevronRight size={15} /></button>)}</div></div></div>;
+}
+
+function TermsView({ onQuery }: { onQuery: (question: string) => void }) {
+  const uniqueTerms = TERMS.filter((t, i, arr) => arr.findIndex((x) => x.label === t.label) === i);
+  const [selected, setSelected] = useState(uniqueTerms[0]);
+  return <section className="terms-page"><div className="subpage-heading"><div><p className="eyebrow dark">FINANCIAL GLOSSARY</p><h1>재무 용어</h1><p className="subhead">용어를 선택하면 실무에서 쓰는 기본 정의와 계산식을 바로 확인합니다.</p></div></div><div className="terms-layout"><div className="terms-list">{uniqueTerms.map((term) => <button key={term.label} className={selected.label === term.label ? "active" : ""} onClick={() => setSelected(term)}><span>{term.label}</span><ChevronRight size={15} /></button>)}</div><article className="term-detail"><div className="term-detail-head"><div><div className="term-icon"><Calculator size={19} /></div><p className="eyebrow dark">FINANCIAL GLOSSARY</p><h2>{selected.label}</h2></div>{isQueryableTerm(selected) ? <button className="primary-button" onClick={() => onQuery(`대한전선의 ${selected.label}은 얼마인가?`)}><MessageSquareText size={15} /> 질의하기</button> : <span className="term-unsupported-badge">정의만 제공</span>}</div><p>{selected.definition}</p><div className="definition-box"><span>계산식 / 산식</span><strong>{selected.formula}</strong></div>{selected.note && <div className="callout"><CircleHelp size={17} /><div><strong>주의</strong><p>{selected.note}</p></div></div>}<p className="term-example">{isQueryableTerm(selected) ? "질의하기를 누르면 위 용어가 분석창에 자동 입력됩니다." : "현재 DART 재무정보만으로는 신뢰성 있게 계산할 수 없어 질의 기능을 비활성화했습니다."}</p></article></div></section>;
+}
+
+function Overview({ company, onCompanyChange, companies, onAddCompany, onAddMetric, customMetrics, snapshot, onRefresh, refreshing, onOpenAsk, onRemoveMetric }: {
+  company: string; onCompanyChange: (v: string) => void; companies: string[]; onAddCompany: () => void; onAddMetric: () => void; customMetrics: MetricKey[]; snapshot?: any; onRefresh: () => void; refreshing: boolean; onOpenAsk: () => void; onRemoveMetric: (key: MetricKey) => void;
+}) {
+  const metrics = snapshot?.metrics as Record<MetricKey, { value: number; unit: string } | null> | undefined;
+  return <>
+    <section className="welcome-row"><div><p className="eyebrow dark">LATEST DART PULSE</p><h1>오늘의 공시 인사이트</h1><p className="subhead">최근 보고서의 핵심 재무지표를 먼저 보고, 필요한 숫자는 직접 확장하세요.</p></div><button className="outline-button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={15} className={refreshing ? "spin" : ""} /> {refreshing ? "갱신 중" : "최신 데이터 갱신"}</button></section>
+    <CompanyPicker companies={companies} active={company} onChange={onCompanyChange} onAdd={onAddCompany} />
+    <section className="dashboard-banner"><div><span className="hero-eyebrow"><Sparkles size={14} /> {snapshot?.demo ? "DEMO SNAPSHOT" : "LIVE OPEN DART"}</span><h2>{company} <em>최근 공시</em></h2><p>{snapshot?.period ?? "OpenDART 인증키를 입력하면 실시간 공시를 조회합니다."} · {snapshot?.basis ?? "연결 기준"}{snapshot?.demo ? " · 사전 저장 시연 데이터" : ""}</p></div><button className="primary-button" onClick={onOpenAsk}>질문으로 파고들기 <ArrowUpRight size={15} /></button></section>
+    <section className="section-row"><div><p className="eyebrow dark">PULSE CHECK</p><h2>핵심 지표</h2></div><span className="section-note">최근 매출액 · 영업이익 · 순이익</span></section>
+    <div className="metric-grid core-metrics"><MetricCard label={`${company} · 매출액`} value={metrics?.revenue?.value} unit={metrics?.revenue?.unit} active /><MetricCard label={`${company} · 영업이익`} value={metrics?.operatingProfit?.value} unit={metrics?.operatingProfit?.unit} /><MetricCard label={`${company} · 순이익`} value={metrics?.netIncome?.value} unit={metrics?.netIncome?.unit} /></div>
+    <section className="section-row custom-section"><div><p className="eyebrow dark">CUSTOM METRICS</p><h2>내가 추가한 지표</h2></div><span className="section-note">최대 6개 · 브라우저에 저장</span></section>
+    <div className="metric-grid custom-metrics">{customMetrics.map((key) => <div key={key}><MetricCard label={`${company} · ${metricLabels[key]}`} value={metrics?.[key]?.value} unit={metrics?.[key]?.unit} onRemove={() => onRemoveMetric(key)} /></div>)}<MetricCard label="" addMode onAdd={onAddMetric} /></div>
+    {customMetrics.length === 0 && <button className="metric-add-wide" onClick={onAddMetric}><Plus size={16} /> 커스텀 지표 추가 <span>영업활동현금흐름 · CAPEX · FCF · 운전자본 · 차입금 · 부채비율</span></button>}
+  </>;
+}
+
+function CategoryQuestion({ company, onSubmit }: { company: string; onSubmit: (query: string, mode?: AskMode) => void }) {
+  const nowYear = new Date().getFullYear();
+  const [year, setYear] = useState(String(nowYear)); const [period, setPeriod] = useState<PeriodKey>("latest"); const [basis, setBasis] = useState<Basis>("CFS"); const [metric, setMetric] = useState<MetricKey>("revenue"); const [keyword, setKeyword] = useState("");
+  const cleanDetail = (input: string) => input
+    .replace(/영업활동현금흐름|투자활동현금흐름|재무활동현금흐름|현금및현금성자산|차입금\s*의존도|영업이익률|영업이익율|자산회전율|단기금융상품|매출채권|매입채무|재고자산|부채비율|유동비율|유동자산|자산총계|부채총계|자본총계|금융원가|운전자본|영업이익|순이익|매출액|매출|차입금|FCF|CAPEX|EBITDA/gi, " ")
+    .replace(/\s+/g, " ").trim();
+  const run = () => {
+    const detail = cleanDetail(keyword);
+    onSubmit(`${company} ${year}년 ${periodLabels[period]} ${basisLabels[basis]} ${metricLabels[metric]}${detail ? ` ${detail}` : ""}`, "category");
+  };
+  const applyDetail = (value: string) => setKeyword(value);
+  return <section className="category-panel"><div className="category-grid">
+    <label><span>년도</span><select value={year} onChange={(e) => setYear(e.target.value)}>{Array.from({ length: 8 }, (_, i) => nowYear - i).map((y) => <option key={y}>{y}</option>)}</select></label>
+    <label><span>보고서</span><select value={period} onChange={(e) => setPeriod(e.target.value as PeriodKey)}><option value="latest">최신 보고서</option><option value="q1">1분기</option><option value="half">반기</option><option value="q3">3분기</option><option value="annual">사업보고서</option></select></label>
+    <label><span>기준</span><select value={basis} onChange={(e) => setBasis(e.target.value as Basis)}><option value="CFS">연결 기준</option><option value="OFS">별도 기준</option></select></label>
+    <label><span>지표</span><select value={metric} onChange={(e) => setMetric(e.target.value as MetricKey)}>{COMPARE_OPTIONS.map((key) => <option key={key} value={key}>{metricLabels[key]}</option>)}</select></label>
+    <label className="category-keyword"><span>세부 검색어 (선택)</span><input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="예: 전년 대비, 증가 원인, 최근 추이" /></label>
+  </div><div className="category-hints"><span>조회 기준: 회사 → 년도 → 보고서 → 기준 → 지표</span><span>세부 검색어는 비교·추이·원인 같은 분석 방향으로만 적용되며, 선택한 지표가 우선됩니다.</span></div><div className="category-detail-chips"><span>빠른 선택</span><button type="button" onClick={() => applyDetail("전년 대비")}>전년 대비</button><button type="button" onClick={() => applyDetail("증가 원인")}>증가 원인</button><button type="button" onClick={() => applyDetail("최근 추이")}>최근 추이</button><button type="button" onClick={() => applyDetail("비교")}>비교</button></div><button className="primary-button category-run" onClick={run}><Search size={16} /> 조건으로 조회</button></section>;
+}
+
+function CompareView({ companies, selected, setSelected, onAddCompany }: {
+  companies: string[]; selected: string[]; setSelected: (v: string[]) => void; onAddCompany: (name: string) => void;
+}) {
+  const [metrics, setMetrics] = useState<MetricKey[]>(["revenue", "operatingProfit"]);
+  const [period, setPeriod] = useState<PeriodKey>("latest"); const [year, setYear] = useState(String(new Date().getFullYear() - 1)); const [basis, setBasis] = useState<Basis>("CFS"); const [companySearch, setCompanySearch] = useState("");
+  const companyQuery = trpc.dart.searchCompanies.useQuery({ query: companySearch, limit: 8 }, { enabled: companySearch.trim().length >= 2 && Boolean(getStoredDartKey()), retry: false, staleTime: 60000 });
+  const compare = trpc.dart.compare.useQuery({ companies: selected, metrics, period, year: period === "latest" ? undefined : Number(year), basis }, { enabled: selected.length >= 2 && metrics.length >= 2 && Boolean(getStoredDartKey()), retry: false, staleTime: 0, refetchOnWindowFocus: false });
+  const toggleMetric = (key: MetricKey) => { if (metrics.includes(key)) { if (metrics.length > 2) setMetrics(metrics.filter((x) => x !== key)); } else if (metrics.length < 5) setMetrics([...metrics, key]); };
+  const addFromSearch = (name: string) => { onAddCompany(name); setSelected([...new Set([...selected, name])].slice(0, 8)); setCompanySearch(""); };
+  const toggleCompany = (name: string) => setSelected(selected.includes(name) ? selected.filter((x) => x !== name) : [...selected, name].slice(0, 8));
+  return <section className="compare-page">
+    <div className="compare-controls"><div><p className="eyebrow dark">LIVE PEER ANALYSIS</p><h2>비교 분석</h2><p>기업과 지표를 선택해 동일 기준으로 비교합니다.</p></div><div className="compare-filter-grid"><label>보고서<select value={period} onChange={(e) => setPeriod(e.target.value as PeriodKey)}><option value="latest">최신 보고서</option><option value="q1">1분기</option><option value="half">반기</option><option value="q3">3분기</option><option value="annual">사업보고서</option></select></label><label>년도<select value={year} onChange={(e) => setYear(e.target.value)} disabled={period === "latest"}>{[2026,2025,2024,2023,2022].map((y) => <option key={y}>{y}</option>)}</select></label><label>기준<select value={basis} onChange={(e) => setBasis(e.target.value as Basis)}><option value="CFS">연결</option><option value="OFS">별도</option></select></label></div></div>
+    <div className="compare-selector-panel"><div className="selector-head"><strong>비교 기업</strong><span>{selected.length}/8</span></div><div className="compare-search-row"><div className="search-input"><Search size={15} /><input value={companySearch} onChange={(e) => setCompanySearch(e.target.value)} placeholder="기업명을 검색해 비교 기업으로 등록" /></div></div>{companySearch.trim().length >= 2 && <div className="compare-search-results">{companyQuery.isLoading && <div>기업목록 조회 중…</div>}{companyQuery.error && <div>조회 오류: {companyQuery.error.message}</div>}{companyQuery.data?.map((item) => <button key={item.code} onClick={() => addFromSearch(item.name)}><span><strong>{item.name}</strong><small>{item.stock || "비상장"}</small></span><Plus size={15} /></button>)}</div>}<div className="compare-chip-list">{selected.map((name) => <button key={name} className="compare-chip selected" onClick={() => toggleCompany(name)}>{name}<X size={13} /></button>)}{companies.filter((name) => !selected.includes(name)).map((name) => <button key={name} className="compare-chip" onClick={() => toggleCompany(name)}>{name}</button>)}</div>{!getStoredDartKey() && <small className="demo-compare-note">실시간 비교는 OpenDART 인증키 연결 후 사용할 수 있습니다.</small>}</div>
+    <div className="compare-selector-panel"><div className="selector-head"><strong>비교 지표</strong><span>{metrics.length}/5 · 최소 2개</span></div><div className="metric-choice-grid">{COMPARE_OPTIONS.map((key) => <button key={key} className={`metric-choice ${metrics.includes(key) ? "selected" : ""}`} onClick={() => toggleMetric(key)} disabled={!metrics.includes(key) && metrics.length >= 5}>{metricLabels[key]}</button>)}</div></div>
+    <div className="compare-live"><div className="compare-live-head"><div><span className="answer-label">{metrics.map((m) => metricLabels[m]).join(" · ")} · {periodLabels[period]} · {basisLabels[basis]}</span><h3>공시값 비교</h3></div>{compare.isFetching && <span className="fetching"><RefreshCw size={13} className="spin" /> 조회 중</span>}</div>{selected.length < 2 ? <div className="compare-empty"><GitCompare size={26} /><strong>2개 이상의 기업을 선택하세요.</strong><span>위 검색창에서 기업을 등록하거나 목록에서 선택하세요.</span></div> : metrics.length < 2 ? <div className="compare-empty"><Filter size={26} /><strong>비교 지표를 2개 이상 선택하세요.</strong><span>최대 5개까지 선택할 수 있습니다.</span></div> : compare.error ? <div className="compare-empty"><CircleHelp size={26} /><strong>비교 조회 오류</strong><span>{compare.error.message}</span></div> : compare.data ? <div className="compare-table-wrap">{compare.data.notice && <p className="table-error" style={{ margin: "0 0 10px" }}>{compare.data.notice}</p>}<table className="compare-table multi-compare-table"><thead><tr><th>기업</th>{metrics.map((key) => <th key={key}>{metricLabels[key]}<small>값</small></th>)}<th>출처</th></tr></thead><tbody>{compare.data.rows.map((row) => <tr key={row.company}><td><strong>{row.company}</strong><small>{row.period || "—"} · {row.basis}</small></td>{metrics.map((key) => { const v = row.values?.[key]; return <td key={key} className="compare-number">{v?.found ? money(v.value, v.unit) : <span className="table-error">{v?.message ?? "—"}</span>}</td>; })}<td className="compare-source"><div>{metrics.map((key) => { const v = row.values?.[key]; return v?.citation ? <a key={key} href={v.citation.match(/\(https[^)]+\)/)?.[0].slice(1, -1)} target="_blank" rel="noreferrer">{metricLabels[key]} 원문 ↗</a> : <span key={key}>{metricLabels[key]}: {v?.message ?? "미확인"}</span>; })}</div></td></tr>)}</tbody></table></div> : <div className="compare-empty"><RefreshCw size={26} /><strong>비교 결과를 불러오는 중입니다.</strong></div>}<div className="compare-formula">선택 지표: {metrics.map((m) => metricLabels[m]).join(" · ")} · 모든 값은 해당 기업의 동일 보고기간과 {basisLabels[basis]} 기준으로 계산·표시합니다.</div></div>
+  </section>;
+}
+
+function CompaniesView({ companies, active, onAdd, onSelect, onRemove }: { companies: string[]; active: string; onAdd: () => void; onSelect: (name: string) => void; onRemove: (name: string) => void }) {
+  return <section className="companies-page"><div className="subpage-heading"><div><p className="eyebrow dark">COMPANY MONITORING</p><h1>기업 모니터링</h1><p className="subhead">추가한 기업은 브라우저에 저장되어 대시보드와 비교분석에 계속 포함됩니다.</p></div><button className="primary-button" onClick={onAdd}><Plus size={15} /> 타 기업 추가</button></div><div className="company-list-card">{companies.map((name) => <div className="company-row" key={name}><div className="company-avatar">{name.slice(0, 2)}</div><div className="company-row-copy"><strong>{name}</strong><span>{name === "대한전선" ? "기본 모니터링 기업" : "추가된 모니터링 기업"}</span></div><div className="company-row-actions">{active === name && <span className="verified-pill"><Check size={12} /> 선택됨</span>}<button className="outline-button" onClick={() => onSelect(name)}>대시보드 보기</button>{name !== "대한전선" && <button className="icon-button danger-icon" onClick={() => onRemove(name)} aria-label={`${name} 삭제`}><X size={16} /></button>}</div></div>)}</div></section>;
+}
+
+function ApiKeySettingsModal({ onClose, onConfigured }: { onClose: () => void; onConfigured: () => void }) {
+  const [draft, setDraft] = useState(getStoredDartKey());
+  const [remember, setRemember] = useState(Boolean(typeof window !== "undefined" && (() => { try { return Boolean(window.localStorage.getItem("dn-opendart-key-local")); } catch { return false; } })()));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const utils = trpc.useUtils();
+
+  const save = async () => {
+    const key = draft.trim();
+    if (!validateDartKeyFormat(key)) { setMessage("OpenDART 인증키는 영문·숫자 40자리여야 합니다."); return; }
+    setBusy(true); setMessage("인증키 확인 중…");
+    try {
+      saveDartKey(key, remember);
+      await utils.dart.searchCompanies.fetch({ query: "대한전선", limit: 1 });
+      await utils.dart.snapshot.invalidate();
+      await utils.dart.compare.invalidate();
+      setMessage("인증키가 정상적으로 확인되었습니다.");
+      onConfigured();
+    } catch (e) {
+      clearDartKey();
+      setMessage(e instanceof Error ? e.message : "인증키를 확인하지 못했습니다.");
+    } finally { setBusy(false); }
+  };
+
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal-card small-modal" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-head"><div><p className="eyebrow dark">OPENDART CONNECTION</p><h2>OpenDART 인증키</h2><p>본인이 OpenDART에서 발급받은 인증키로 실시간 조회를 사용할 수 있습니다.</p></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div>
+    <div className="api-key-box"><div className="api-key-label"><KeyRound size={16} /> 인증키</div><input type="password" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="영문·숫자 40자리" autoComplete="off" spellCheck={false}/><small>인증키는 서비스 계정 비밀번호가 아닙니다. 다른 사람의 키를 입력하지 마세요.</small></div>
+    <label className="remember-toggle"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /><span>이 브라우저에 기억</span></label>
+    <div className="api-key-actions"><button className="ghost-button" onClick={() => { clearDartKey(); setDraft(""); setMessage("브라우저에 저장된 인증키를 삭제했습니다."); onConfigured(); }}>인증키 삭제</button><button className="primary-button" onClick={save} disabled={busy}>{busy ? "확인 중…" : "인증키 확인 및 저장"}</button></div>
+    {message && <div className="modal-note"><ShieldCheck size={14} /> {message}</div>}
+    <div className="api-help"><strong>OpenDART 인증키 안내</strong><a href="https://opendart.fss.or.kr/uss/umt/EgovMberInsertView.do" target="_blank" rel="noopener noreferrer">① 인증키 신청 바로가기 ↗</a><p>② OpenDART 로그인 → 인증키 관리에서 본인의 40자리 인증키 확인 → ③ 인증키 복사 → ④ 위 입력칸에 붙여넣기 → ⑤ 인증키 확인 및 저장을 누르세요.</p></div>
+    <button className="ghost-button" onClick={onClose}>인증키 없이 체험 모드로 계속하기</button>
+  </div></div>;
+}
+
+function Dashboard() {
+  const [view, setView] = useState<View>("overview");
+  const [showOnboarding, setShowOnboarding] = useState(() => !getStoredDartKey());
+  const [askMode, setAskMode] = useState<AskMode>("natural");
+  const [collapsed, setCollapsed] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeQuery, setActiveQuery] = useState("대한전선 2026년 상반기 연결 기준 매출액");
+  const [showAddCompany, setShowAddCompany] = useState(false);
+  const [showAddMetric, setShowAddMetric] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [dartConfigured, setDartConfigured] = useState(() => Boolean(getStoredDartKey()));
+  const [monitoredCompanies, setMonitoredCompanies] = useStoredState<string[]>("dn-monitored-companies", ["대한전선"]);
+  const [activeCompany, setActiveCompany] = useStoredState<string>("dn-active-company", "대한전선");
+  const [customMetrics, setCustomMetrics] = useStoredState<MetricKey[]>("dn-custom-metrics", []);
+  const [compareSelected, setCompareSelected] = useStoredState<string[]>("dn-compare-companies", ["대한전선"]);
+  const utils = trpc.useUtils();
+  const snapshot = trpc.dart.snapshot.useQuery({ company: activeCompany }, { enabled: dartConfigured, retry: false, staleTime: 0, refetchOnWindowFocus: false });
+  const visibleSnapshot = dartConfigured ? snapshot.data : (activeCompany === "대한전선" ? DEMO_SNAPSHOT : undefined);
+  const refreshMutation = trpc.dart.refresh.useMutation({ onSuccess: async () => { await snapshot.refetch(); await utils.dart.compare.invalidate(); } });
+
+  useEffect(() => { if (!monitoredCompanies.includes(activeCompany)) setActiveCompany(monitoredCompanies[0] ?? "대한전선"); }, [monitoredCompanies, activeCompany, setActiveCompany]);
+  useEffect(() => { if (compareSelected.filter((x) => monitoredCompanies.includes(x)).length < 2 && monitoredCompanies.length >= 2) setCompareSelected(monitoredCompanies.slice(0, 2)); }, [monitoredCompanies, compareSelected, setCompareSelected]);
+
+  const currentTitle = useMemo(() => ({ overview: "Overview", ask: "질문하기", compare: "비교 분석", sources: "공시 라이브러리", terms: "재무 용어", companies: "기업 모니터링" }[view]), [view]);
+  const submitQuery = (nextQuery = query, mode: AskMode = "natural") => { if (!nextQuery.trim()) return; setActiveQuery(nextQuery); setQuery(""); setView("ask"); setAskMode(mode); };
+  const addCompany = (name: string) => { const next = monitoredCompanies.includes(name) ? monitoredCompanies : [...monitoredCompanies, name]; setMonitoredCompanies(next); setActiveCompany(name); if (compareSelected.length < 2 && !compareSelected.includes(name)) setCompareSelected([...compareSelected, name]); };
+  const removeCompany = (name: string) => { setMonitoredCompanies(monitoredCompanies.filter((x) => x !== name)); setCompareSelected(compareSelected.filter((x) => x !== name)); if (activeCompany === name) setActiveCompany("대한전선"); };
+  useEffect(() => { const migrated = customMetrics.map((key) => key === "netDebt" ? "debt" : key === "netWorkingCapital" ? "workingCapital" : key); if (JSON.stringify(migrated) !== JSON.stringify(customMetrics)) setCustomMetrics(migrated); }, [customMetrics, setCustomMetrics]);
+  const addMetric = (metric: MetricKey) => { if (!customMetrics.includes(metric)) setCustomMetrics([...customMetrics, metric]); setShowAddMetric(false); };
+  const removeMetric = (metric: MetricKey) => setCustomMetrics(customMetrics.filter((key) => key !== metric));
+
+  if (showOnboarding) return <ApiKeySettingsModal onClose={() => setShowOnboarding(false)} onConfigured={() => { setDartConfigured(Boolean(getStoredDartKey())); setShowOnboarding(false); }} />;
+  return <div className="app-shell">
+    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
+      <div className="sidebar-top"><div className="brand-lockup compact"><LogoMark /><span><b>DART</b></span></div><button className="collapse-button" onClick={() => setCollapsed((v) => !v)}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></div>
+      <nav className="side-nav">
+        <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}><LayoutDashboard size={17} /><span>Overview</span><kbd>⌘1</kbd></button>
+        <button className={view === "ask" ? "active" : ""} onClick={() => { setView("ask"); setAskMode("natural"); }}><MessageSquareText size={17} /><span>질문하기</span><ChevronDown className={askMode === "category" ? "rotated" : ""} size={13} /></button>
+        {!collapsed && <div className="nav-sub"><button className={view === "ask" && askMode === "natural" ? "active" : ""} onClick={() => { setView("ask"); setAskMode("natural"); }}>자연어</button><button className={view === "ask" && askMode === "category" ? "active" : ""} onClick={() => { setView("ask"); setAskMode("category"); }}>카테고리</button></div>}
+        <button className={view === "compare" ? "active" : ""} onClick={() => setView("compare")}><GitCompare size={17} /><span>비교 분석</span><kbd>⌘3</kbd></button>
+        <button className={view === "sources" ? "active" : ""} onClick={() => setView("sources")}><BookOpen size={17} /><span>공시 라이브러리</span></button>
+        <button className={view === "terms" ? "active" : ""} onClick={() => setView("terms")}><Calculator size={17} /><span>재무 용어</span></button>
+        <p className="nav-label spaced">MANAGE</p><button className={view === "companies" ? "active" : ""} onClick={() => setView("companies")}><Building2 size={17} /><span>기업 모니터링</span><span className="nav-count">{monitoredCompanies.length}</span></button><button onClick={() => setShowSettings(true)}><Settings2 size={17} /><span>API 변경</span></button>
+      </nav>
+      <div className="sidebar-bottom"><div className={`connection-status ${dartConfigured ? "connected" : "demo"}`}><span className="status-dot" /><div><strong>{dartConfigured ? "DART 데이터 연결" : "시연 모드"}</strong><span>{dartConfigured ? "OpenDART · 실시간 공시 데이터" : "사전 저장된 검증 데이터 · 인증키 없이 체험"}</span></div></div></div>
+    </aside>
+    <main className="main-area"><header className="topbar"><div className="breadcrumb"><span>DART</span><ChevronRight size={14} /><strong>{currentTitle}</strong></div><div className="topbar-actions"><button className="top-refresh" onClick={() => refreshMutation.mutate({ company: activeCompany })} disabled={refreshMutation.isPending}><RefreshCw size={15} className={refreshMutation.isPending ? "spin" : ""} /> {refreshMutation.isPending ? "갱신 중" : "최신 데이터 갱신"}</button></div></header>
+      <div className="content-scroll"><div className="content-container">
+        {view === "overview" && <Overview company={activeCompany} onCompanyChange={setActiveCompany} companies={monitoredCompanies} onAddCompany={() => setShowAddCompany(true)} onAddMetric={() => setShowAddMetric(true)} customMetrics={customMetrics} snapshot={visibleSnapshot} onRefresh={() => refreshMutation.mutate({ company: activeCompany })} refreshing={refreshMutation.isPending} onOpenAsk={() => { setView("ask"); setAskMode("natural"); }} onRemoveMetric={removeMetric} />}
+        {view === "ask" && <><section className="subpage-heading"><div><p className="eyebrow dark">ANALYSIS</p><h1>질문하기</h1><p className="subhead">자연어 또는 카테고리 선택으로 공시 수치를 조회하세요.</p></div></section><div className="ask-tabs"><button className={askMode === "natural" ? "active" : ""} onClick={() => setAskMode("natural")}><MessageSquareText size={15} /> 자연어</button><button className={askMode === "category" ? "active" : ""} onClick={() => setAskMode("category")}><Filter size={15} /> 카테고리</button></div>{askMode === "natural" ? <section className="ask-workspace"><div className="ask-input-large"><span className="mini-avatar">DN</span><input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitQuery()} placeholder="예: 대한전선 2026년 반기 연결 기준 순이익" /><button className="primary-button" onClick={() => submitQuery()}><Send size={16} /> 분석 실행</button></div><div className="natural-query-guide"><strong>질문 작성 기준</strong><span><b>회사</b> · <b>기간</b> · <b>보고서</b> · <b>기준</b> · <b>지표</b> · <b>비교/추이/원인</b></span><small>예: 대한전선 2026년 반기 연결 기준 순이익 / 최근 4개년 상반기 매출액 / 2024~2026 매출과 영업이익 비교</small></div><div className="quick-prompts"><button onClick={() => submitQuery(dartConfigured ? `${activeCompany} 최근 매출액` : `대한전선 2026년 반기 매출액`)}>최근 매출액</button><button onClick={() => submitQuery(dartConfigured ? `${activeCompany} 최근 영업이익` : `대한전선 2026년 반기 영업이익`)}>최근 영업이익</button><button onClick={() => submitQuery(dartConfigured ? `${activeCompany} 최근 영업이익률` : `대한전선 2026년 반기 영업이익률`)}>최근 영업이익률</button><button onClick={() => submitQuery(dartConfigured ? `${activeCompany} 최근 순이익` : `대한전선 2026년 반기 매출과 영업이익`)}>핵심 비교</button></div></section> : <CategoryQuestion company={activeCompany} onSubmit={submitQuery} />}<div className="query-context"><span><Search size={13} /> Query</span><strong>{activeQuery}</strong></div><LiveDartPanel question={activeQuery} /></>}
+        {view === "compare" && <><section className="subpage-heading"><div><p className="eyebrow dark">ANALYSIS</p><h1>비교 분석</h1><p className="subhead">정적 샘플이 아니라 선택한 기업의 실제 OpenDART 데이터를 비교합니다.</p></div></section><CompareView companies={monitoredCompanies} selected={compareSelected} setSelected={setCompareSelected} onAddCompany={addCompany} /></>}
+        {view === "terms" && <TermsView onQuery={(q) => { setQuery(q); setActiveQuery(q); setAskMode("natural"); setView("ask"); }} />}
+        {view === "companies" && <CompaniesView companies={monitoredCompanies} active={activeCompany} onAdd={() => setShowAddCompany(true)} onSelect={(name) => { setActiveCompany(name); setView("overview"); }} onRemove={removeCompany} />}
+        {view === "sources" && <section className="sources-page"><section className="subpage-heading"><div><p className="eyebrow dark">DOCUMENT CONTROL</p><h1>공시 라이브러리</h1><p className="subhead">현재 선택된 기업의 최신 공시 기준과 출처를 확인합니다.</p></div></section><section className="library-panel"><div className="library-toolbar"><div><strong>{visibleSnapshot?.company ?? activeCompany}</strong><span>{visibleSnapshot?.period ?? "OpenDART 인증키를 입력하면 실시간 공시를 조회합니다."}</span></div><button className="outline-button" onClick={() => refreshMutation.mutate({ company: activeCompany })}><RefreshCw size={14} /> 최신화</button></div><div className="source-list">{CORE_METRICS.concat(customMetrics).filter((v, i, a) => a.indexOf(v) === i).map((key) => <div className="source-list-row" key={key}><div className="pdf-icon"><FileText size={18} /></div><div><strong>{metricLabels[key]}</strong><span>{visibleSnapshot?.metrics?.[key]?.citation ?? "아직 조회된 출처가 없습니다."}</span></div>{visibleSnapshot?.metrics?.[key]?.citation && <a href={visibleSnapshot.metrics[key].citation.match(/\(https[^)]+\)/)?.[0].slice(1, -1)} target="_blank" rel="noreferrer">원문</a>}</div>)}</div></section></section>}
+      </div></div>
+    </main>
+    {showAddCompany && <CompanyModal onClose={() => setShowAddCompany(false)} onAdded={addCompany} />}
+    {showAddMetric && <MetricPicker existing={customMetrics} onClose={() => setShowAddMetric(false)} onAdd={addMetric} />}
+    {showSettings && <ApiKeySettingsModal onClose={() => setShowSettings(false)} onConfigured={() => { setDartConfigured(Boolean(getStoredDartKey())); setShowSettings(false); }} />}
+  </div>;
+}
+
+export default function Home() {
+  return <Dashboard />;
+}
