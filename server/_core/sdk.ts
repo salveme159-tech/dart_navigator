@@ -31,11 +31,9 @@ const GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserI
 class OAuthService {
   constructor(private client: ReturnType<typeof axios.create>) {
     console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
-    if (!ENV.oAuthServerUrl) {
-      console.error(
-        "[OAuth] ERROR: MANUS_OAUTH_API_URL is not configured! Set MANUS_OAUTH_API_URL environment variable."
-      );
-    }
+    // OAuth is optional for the standalone DART workflow. Do not emit a startup error
+    // when this deployment intentionally uses its own DART API-key gate.
+    if (!ENV.oAuthServerUrl) console.info("[OAuth] Optional OAuth integration is disabled; standalone DART mode remains available.");
   }
 
   private decodeState(state: string): string {

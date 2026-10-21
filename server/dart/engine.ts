@@ -72,6 +72,50 @@ export function unzipFirst(buf: Buffer): string {
   return (method === 8 ? inflateRawSync(data) : data).toString("utf8");
 }
 
+/** OpenDART document.xml 응답 ZIP에서 모든 문서 엔트리를 읽습니다. */
+export function unzipAll(buf: Buffer): Array<{ name: string; text: string }> {
+  let eocd = buf.length - 22;
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error("DART 원문 파일이 유효한 ZIP이 아닙니다.");
+  const total = buf.readUInt16LE(eocd + 10);
+  let cursor = buf.readUInt32LE(eocd + 16);
+  const out: Array<{ name: string; text: string }> = [];
+  for (let i = 0; i < total; i++) {
+    if (cursor + 46 > buf.length || buf.readUInt32LE(cursor) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(cursor + 10);
+    const compressedSize = buf.readUInt32LE(cursor + 20);
+    const nameLen = buf.readUInt16LE(cursor + 28);
+    const extraLen = buf.readUInt16LE(cursor + 30);
+    const commentLen = buf.readUInt16LE(cursor + 32);
+    const localOffset = buf.readUInt32LE(cursor + 42);
+    const name = buf.toString("utf8", cursor + 46, cursor + 46 + nameLen);
+    if (localOffset + 30 <= buf.length && buf.readUInt32LE(localOffset) === 0x04034b50) {
+      const localNameLen = buf.readUInt16LE(localOffset + 26);
+      const localExtraLen = buf.readUInt16LE(localOffset + 28);
+      const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+      const compressed = buf.subarray(dataStart, dataStart + compressedSize);
+      try {
+        const data = method === 8 ? inflateRawSync(compressed) : method === 0 ? compressed : null;
+        if (data) {
+          // DART 첨부 원문 ZIP 안의 HTML/XML은 UTF-8이 아닌 EUC-KR로 내려오는 경우가 있습니다.
+          // UTF-8 고정 디코딩은 한글 주석의 계정명·기간 머리글을 깨뜨려 EBITDA 계정 탐색을 실패시킵니다.
+          let utf8 = "";
+          let isValidUtf8 = false;
+          try { utf8 = new TextDecoder("utf-8", { fatal: true }).decode(data); isValidUtf8 = true; } catch { utf8 = data.toString("utf8"); }
+          let euc = "";
+          if (!isValidUtf8) {
+            try { euc = new TextDecoder("euc-kr").decode(data); } catch { /* 런타임에 EUC-KR 디코더가 없으면 UTF-8 대체 */ }
+          }
+          const text = !isValidUtf8 && euc ? euc : utf8;
+          out.push({ name, text });
+        }
+      } catch { /* 손상된 엔트리는 다른 원문 파일을 읽는 데 영향을 주지 않도록 건너뜁니다. */ }
+    }
+    cursor += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
 export const fsDivFor = (q: string): "CFS" | "OFS" => (/별도|개별/.test(q) ? "OFS" : "CFS");
 export const fsLabel = (fs: "CFS" | "OFS") => (fs === "CFS" ? "연결 기준" : "별도 기준");
 export const parseYear = (q: string): number | null => {
@@ -81,6 +125,10 @@ export const parseYear = (q: string): number | null => {
 
 export type Row = {
   sj_div?: string;
+  sj_nm?: string;
+  account_id?: string;
+  unit?: string;
+  thstrm_nm?: string;
   account_nm?: string;
   thstrm_amount?: string;
   thstrm_add_amount?: string;
@@ -107,56 +155,136 @@ export const findRowLike = (rows: Row[], sj: string[], names: string[]) => {
   const target = names.map(N);
   const candidates = rows.filter((r) => {
     const account = N(r.account_nm);
-    return sj.includes(r.sj_div ?? "") && target.some((n) => account === n || account.includes(n)) && !account.includes("리스");
+    // 부분 문자열 포함만으로 선택하면 '기타수익', '매출채권' 등 인접 계정이 잘못 잡힐 수 있습니다.
+    return sj.includes(r.sj_div ?? "") && target.some((n) => account === n || (n.length >= 3 && account.startsWith(n) && !(/^(매출채권|매출원가|매출총이익)/.test(account) && n === "매출"))) && !account.includes("리스");
   });
-  // Broad aliases such as "수익" can accidentally match 금융수익/기타수익 before 매출액.
-  // Always prefer an exact normalized account match, then a prefix match, then a contains match.
-  return candidates.sort((a, b) => {
-    const aa = N(a.account_nm), bb = N(b.account_nm);
-    const score = (x: string) => target.some((n) => x === n) ? 0 : target.some((n) => x.startsWith(n)) ? 1 : 2;
-    return score(aa) - score(bb) || aa.length - bb.length;
-  })[0];
+  // 핵심: 요청한 재무제표 종류 우선순위(CIS→IS 등)를 계정명 점수보다 먼저 반영합니다.
+  // CFS 응답 안에 IS와 CIS의 동명 계정이 함께 있을 때 별도 손익 숫자를 고르는 오류를 방지합니다.
+  const statementRank = (row: Row) => {
+    const rank = sj.indexOf(row.sj_div ?? "");
+    return rank < 0 ? 999 : rank;
+  };
+  const accountRank = (account: string) => {
+    const exact = target.findIndex((n) => account === n);
+    if (exact >= 0) return exact * 10;
+    const prefix = target.findIndex((n) => account.startsWith(n));
+    return prefix >= 0 ? prefix * 10 + 1 : 999;
+  };
+  return candidates.sort((a, b) =>
+    statementRank(a) - statementRank(b) ||
+    accountRank(N(a.account_nm)) - accountRank(N(b.account_nm)) ||
+    N(a.account_nm).length - N(b.account_nm).length
+  )[0];
 };
 
 type Groups = [string, string[]][];
 const DEBT: Groups = [
-  ["단기차입금", ["단기차입금"]],
-  ["유동성장기부채", ["유동성장기부채", "유동성장기차입금", "유동성사채", "유동성장기사채"]],
-  ["장기차입금", ["장기차입금"]],
-  ["사채", ["사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"]],
+  ["단기차입금", ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기차입금및사채", "유동차입금"]],
+  ["유동성장기부채", ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성차입부채", "유동성금융기관차입금", "유동성차입금", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채", "비유동차입금의유동성대체부분"]],
+  ["장기차입금", ["장기차입금", "장기차입부채", "장기금융기관차입금", "비유동차입금", "비유동차입부채"]],
+  ["사채", ["사채", "회사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"]],
 ];
-const LIQ: Groups = [["현금및현금성자산", ["현금및현금성자산"]], ["단기금융상품", ["단기금융상품", "단기금융자산"]]];
+const LIQ: Groups = [["현금및현금성자산", ["현금및현금성자산"]], ["단기금융상품", ["단기금융상품", "단기금융자산", "단기예치금"]]];
+
+// 재무상태표에서 계정에 명시된 대시(-/—)는 해당 시점의 공시상 0으로 해석합니다.
+// 빈 문자열, 계정 행 자체의 부재, 파싱 불가 값은 0으로 바꾸지 않습니다.
+function debtAmountOf(row: Row, idx = 0): number | null {
+  const amountFields = ["thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount"] as const;
+  const raw = (row[amountFields[idx]] ?? "").replace(/,/g, "").trim();
+  if (/^(?:-|—|–|－|−)$/.test(raw)) return 0;
+  return amountOf(row, idx);
+}
 
 export type Item = { group: string; account: string; amount: number; sign: "+" | "−" };
+
+function findDebtRow(rows: Row[], names: string[], group: string, idx = 0): Row | undefined {
+  const aliases = names.map(N);
+  const accountIds: Record<string, RegExp> = {
+    "단기차입금": /ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent/i,
+    "유동성장기부채": /CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongTermBorrowings|CurrentPortionOfLongtermLoans|CurrentPortionOfLongTermLoans|CurrentPortionOfLongtermDebt|CurrentPortionOfLongTermDebt|CurrentPortionOfLongtermLiabilities|CurrentPortionOfLongTermLiabilities|CurrentMaturitiesOfLongtermBorrowings|CurrentMaturitiesOfLongTermBorrowings/i,
+    "장기차입금": /LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|LongtermDebtNoncurrent|BorrowingsNoncurrent|NoncurrentBorrowings|NoncurrentLoansAndBorrowings/i,
+    "사채": /BondsIssued|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i,
+  };
+  const idPattern = accountIds[group];
+  const candidates = rows.filter((row) => {
+    if (row.sj_div !== "BS") return false;
+    const account = N(row.account_nm);
+    const accountId = row.account_id ?? "";
+    if ((!account && !(idPattern && idPattern.test(accountId))) || account.includes("리스")) return false;
+    // 할인발행차금·장부가액 조정 등 차입금의 원금 잔액이 아닌 contra 계정은 총차입금에서 제외합니다.
+    if (/사채할인발행차금|차입금할인발행차금|미상각할인차금|할인발행차금|상환할증금|사채발행비/.test(account)) return false;
+    // 총차입금·차입금및사채 등 포괄 합계행은 구성 계정 그룹에 중복 포함하지 않습니다.
+    if (/^(총차입금|차입금총계|차입금합계|총차입부채|차입금및사채|차입금및회사채|차입금과사채)$/.test(account)) return false;
+    // 유동성 사채는 유동성장기부채 그룹에서 한 번만 집계합니다.
+    if (group === "사채" && account.startsWith("유동성")) return false;
+    if (group === "장기차입금" && (account.startsWith("유동성") || /CurrentPortion/i.test(accountId))) return false;
+    // '단기차입금 및 사채'는 단기 그룹에서 이미 집계될 수 있으므로 사채 그룹에서 중복 합산하지 않습니다.
+    if (group === "사채" && /^(단기차입금및사채|단기사채및차입금)/.test(account)) return false;
+    // '장기차입금(사채 포함)'은 사채 금액을 이미 포함합니다.
+    if (group === "사채" && /장기차입금.*사채포함|장기차입금포함.*사채/.test(account)) return false;
+    const nameMatch = aliases.some((alias) => account === alias || account.startsWith(alias) || account.includes(alias));
+    return nameMatch || Boolean(idPattern?.test(accountId));
+  });
+  const rank = (account: string, accountId: string) => {
+    if (aliases.some((alias) => account === alias)) return 0;
+    if (aliases.some((alias) => account.startsWith(alias))) return 1;
+    if (idPattern?.test(accountId)) return 2;
+    return 3;
+  };
+  // 같은 계정의 주석/표기 행이 복수면, 우선 실제 당기 금액을 읽을 수 있는 행을 선택합니다.
+  return candidates.sort((a, b) => {
+    const aa = N(a.account_nm), bb = N(b.account_nm);
+    const av = debtAmountOf(a, idx), bv = debtAmountOf(b, idx);
+    const unavailableA = av === null || !Number.isFinite(av) ? 1 : 0;
+    const unavailableB = bv === null || !Number.isFinite(bv) ? 1 : 0;
+    return unavailableA - unavailableB || rank(aa, a.account_id ?? "") - rank(bb, b.account_id ?? "") || aa.length - bb.length;
+  })[0];
+}
 
 export function netDebt(rows: Row[], idx = 0) {
   const items: Item[] = [];
   const missing: string[] = [];
-  const collect = (groups: Groups, sign: "+" | "−") => {
+  const debtMissing: string[] = [];
+  const liquidMissing: string[] = [];
+  const collect = (groups: Groups, sign: "+" | "−", missingGroup: string[]) => {
     let sum = 0;
-    for (const [g, names] of groups) {
-      let hit = false;
-      for (const n of names) {
-        const r = findRowLike(rows, ["BS"], [n]);
-        const a = r ? amountOf(r, idx) : null;
-        if (r && a !== null) {
-          items.push({ group: g, account: (r.account_nm ?? "").trim(), amount: a, sign });
-          sum += a;
-          hit = true;
-          break;
-        }
+    for (const [group, names] of groups) {
+      // If a long-term row explicitly states that bonds are included, the bond group is already covered.
+      const longTermIncludesBonds = group === "사채" && rows.some((row) => row.sj_div === "BS" && /(?:장기차입금|비유동차입(?:금|부채)).*사채.*포함|(?:장기차입금|비유동차입(?:금|부채)).*포함.*사채/.test((row.account_nm ?? "").replace(/[\s·ㆍ]/g, "")) && debtAmountOf(row, idx) !== null);
+      if (longTermIncludesBonds) continue;
+      const row = findDebtRow(rows, names, group, idx);
+      const amount = row ? debtAmountOf(row, idx) : null;
+      if (row && amount !== null && Number.isFinite(amount)) {
+        items.push({ group, account: (row.account_nm ?? "").trim(), amount, sign });
+        sum += amount;
+      } else {
+        missingGroup.push(group);
+        missing.push(group);
       }
-      if (!hit) missing.push(g);
     }
     return sum;
   };
-  const totalDebt = collect(DEBT, "+");
-  const liquid = collect(LIQ, "−");
-  if (!items.some((i) => i.group === "현금및현금성자산")) {
-    return { ok: false as const, reason: "현금및현금성자산 계정을 찾지 못해 계산할 수 없습니다.", items, missing };
+  const totalDebt = collect(DEBT, "+", debtMissing);
+  const liquid = collect(LIQ, "−", liquidMissing);
+  const allDebtKnown = debtMissing.length === 0;
+  const allLiquidKnown = liquidMissing.length === 0;
+  if (!allDebtKnown || !allLiquidKnown) {
+    return {
+      ok: false as const,
+      debtKnown: allDebtKnown,
+      liquidKnown: allLiquidKnown,
+      debtMissing,
+      liquidMissing,
+      reason: `구성 계정이 모두 확인되지 않아 계산하지 않았습니다: ${missing.join(", ")}`,
+      items, missing, totalDebt, liquid,
+    };
   }
   return {
     ok: true as const,
+    debtKnown: true as const,
+    liquidKnown: true as const,
+    debtMissing: [] as string[],
+    liquidMissing: [] as string[],
     value: totalDebt - liquid,
     totalDebt,
     liquid,
@@ -181,13 +309,38 @@ export function chunkByHeading(text: string): { heading: string; body: string }[
 export const SYSTEM_PROMPT = `너는 DART 공시 재무 팩트체커다.\n1) 사용자가 쓴 기업명은 약어·(주) 표기를 제거해 DART 공식 명칭으로 정규화한 뒤 도구에 전달하라.\n2) 순차입금 등 계산이 필요한 지표는 반드시 내장 함수 결과를 그대로 사용하라.\n3) 도구가 반환하지 않은 수치는 만들지 말고 "해당 자료를 찾을 수 없습니다"라고 답하라.\n4) 모든 수치에 연결/별도 기준, 계산식(계산 지표인 경우), 출처 링크를 함께 표시하라.`;
 
 export const DEFAULT_COMPANY = "대한전선";
-const VOCAB = /순차입금|순부채|차입금|영업활동현금흐름|영업현금흐름|영업현금|현금흐름|영업이익|영업익|당기순이익|당기순익|순이익|순익|매출액|매출|capex|설비투자|자본적지출|유형자산|취득|부채비율|영업이익률|영업마진|연도|개년|연간|상반기|하반기|반기|분기|사업보고서|연결|별도|개별|기준|재무제표|올해|작년|지난해|전년도|최근|지난|직전|알려줘|알려주세요|알려|얼마야|얼마|보여줘|조회|궁금|추이|증가|감소|비교|차이|전년|20\d\d|[0-9]+|년|월|도/gi;
+const VOCAB = /순차입금|순부채|차입금의존도|총차입금|차입금|영업활동현금흐름|영업현금흐름|영업현금|투자현금흐름|재무현금흐름|현금흐름|영업이익[률율]?|영업익|당기순이익|당기순익|순이익[률율]?|순익|매출원가|매출총이익|매출채권|매출액|매출|운전자본|FCF|잉여현금흐름|자유현금흐름|capex|설비투자|자본적지출|유형자산|취득|부채비율|유동비율|영업마진|연도|개년|연간|상반기|하반기|반기|분기|사업보고서|연결|별도|개별|기준|재무제표|올해|금년|작년|지난해|전년도|최근|지난|직전|알려줘|알려주세요|알려|얼마야|얼마|보여줘|조회|궁금|추이|증가|감소|비교|차이|전년|20\d\d|[0-9]+|년|월|도/gi;
 const PARTICLE = /^(은|는|이|가|을|를|의|도|만|좀|해줘|줘|야|요|해|주세요|인가요|뭐야|어때|입니까)+$/;
-export const looksLikeCompany = (q: string) =>
-  q
-    .replace(VOCAB, " ")
+// Direct account names must not be mistaken for unknown company names. Keep longest
+// terms first so a shorter alias does not leave a misleading suffix behind.
+const KNOWN_FINANCIAL_TERMS = [
+  "비유동차입금의유동성대체부분", "현금및현금성자산", "유동성장기부채", "유동성장기차입금", "유동성장기사채",
+  "유동성금융기관차입금", "유동당기손익-공정가치측정금융자산", "비유동당기손익-공정가치측정금융자산",
+  "비유동상각후원가측정금융자산", "기타포괄손익-공정가치측정금융자산", "지배기업의소유주에게귀속되는자본",
+  "매출채권및기타채권", "영업활동으로인한현금흐름", "투자활동으로인한현금흐름", "재무활동으로인한현금흐름",
+  "수익(매출액)", "당기순이익(손실)", "유동매출채권", "비유동매출채권", "현금흐름", "총차입금", "순차입금",
+  "유동재고자산", "유동매입채무", "기타유동금융자산", "기타비유동금융자산", "기타유동금융부채",
+  "기타비유동금융부채", "기타유동자산", "기타비유동자산", "기타유동부채", "기타비유동부채",
+  "영업이익률", "영업이익율", "순이익률", "순이익율", "차입금의존도", "매출총이익", "판매비와관리비",
+  "법인세차감전순손익", "지배기업소유주귀속반기순손익", "기본주당순손익", "희석주당순손익",
+  "영업활동현금흐름", "투자활동현금흐름", "재무활동현금흐름", "영업현금흐름", "투자현금흐름", "재무현금흐름",
+  "단기금융상품", "단기금융자산", "단기대여금", "당기법인세자산", "당기법인세부채", "유동충당부채",
+  "비유동충당부채", "이연법인세자산", "이연법인세부채", "자산총계", "부채총계", "자본총계", "자본과부채총계",
+  "유동자산", "비유동자산", "유동부채", "비유동부채", "매출채권", "매입채무", "재고자산", "유형자산",
+  "무형자산", "투자부동산", "장기차입금", "단기차입금", "유동성전환사채", "유동성사채", "사채", "전환사채",
+  "자본금", "기타불입자본", "기타포괄손익누계액", "이익잉여금", "비지배지분", "영업외손익", "기타이익", "기타손실",
+  "금융수익", "금융원가", "법인세비용", "반기순손익", "분기순손익", "당기순이익", "당기순손익", "기타포괄손익",
+  "총포괄손익", "매출원가", "영업수익", "매출액", "운전자본", "순부채", "차입금", "부채비율", "유동비율",
+  "이자보상배율", "자기자본이익률", "총자산이익률", "자산회전율", "ROE", "ROA", "EPS", "EBITDA", "PER", "PBR", "CAPEX", "FCF",
+].sort((a, b) => b.length - a.length);
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export const looksLikeCompany = (q: string) => {
+  let residue = q.replace(VOCAB, " ");
+  for (const term of KNOWN_FINANCIAL_TERMS) residue = residue.replace(new RegExp(escapeRegExp(term), "gi"), " ");
+  return residue
     .split(/[^가-힣A-Za-z&]+/)
     .some((t) => t.length >= 2 && !PARTICLE.test(t));
+};
 
 const CODE = { annual: "11011", half: "11012", q1: "11013", q3: "11014" } as const;
 export type Kind = keyof typeof CODE;
@@ -198,15 +351,29 @@ export function periodCandidates(q: string, now = new Date()): Period[] {
   const y = parseYear(q);
   const cur = now.getFullYear();
   const year = y ?? cur;
+  const asksCurrentYear = /올해|금년|당해연도/.test(q);
+  const asksPreviousYear = /작년|지난해|전년도/.test(q);
+  // DART는 별도 "하반기보고서"를 제공하지 않습니다. 연간 값을 하반기 값으로 오인하지 않도록 거부합니다.
   if (/하반기/.test(q)) return [];
   if (/상반기|반기/.test(q)) return [P(year, "half")];
   if (/2\s*분기/.test(q)) return [P(year, "half", "qtr")];
   if (/1\s*분기/.test(q)) return [P(year, "q1")];
   if (/3\s*분기/.test(q)) return [P(year, "q3")];
-  if (/사업보고서|연간|작년|지난해|전년도/.test(q)) return [P(y ?? cur - 1, "annual")];
+  if (/사업보고서|연간|연도별|연간실적/.test(q) || (asksPreviousYear && !asksCurrentYear)) {
+    return [P(y ?? cur - 1, "annual")];
+  }
   if (y && y < cur) return [P(y, "annual")];
-  const latest = [P(year, "q3"), P(year, "half"), P(year, "q1")];
-  return y ? latest : [...latest, P(year - 1, "annual")];
+  // 정기보고서 제출기한을 고려해 아직 제출되지 않았을 가능성이 높은 보고서를 첫 호출로 두지 않습니다.
+  // 예: 10월에는 3분기보고서보다 이미 공개된 반기보고서를 먼저 조회해 기업 등록 대기를 줄입니다.
+  const month = now.getMonth() + 1;
+  const latest: Period[] = month >= 11
+    ? [P(year, "q3"), P(year, "half"), P(year, "q1"), P(year - 1, "annual")]
+    : month >= 8
+      ? [P(year, "half"), P(year, "q1"), P(year - 1, "annual")]
+      : month >= 5
+        ? [P(year, "q1"), P(year - 1, "annual")]
+        : [P(year - 1, "annual"), P(year - 1, "q3"), P(year - 1, "half")];
+  return latest;
 }
 
 export const periodFromFilters = (year: number | undefined, period: Kind | "latest", now = new Date()): Period[] => {
@@ -220,7 +387,7 @@ export const baseDate = (p: Period) => `${p.year}.${{ annual: "12.31", half: "06
 export const modeLabel = (p: Period) =>
   p.kind === "annual" ? "연간" : p.mode === "qtr" ? "해당 분기(3개월)" : p.kind === "half" ? "상반기 누적(1~6월)" : p.kind === "q1" ? "1분기(1~3월)" : "3분기 누적(1~9월)";
 
-export type FinancialMetric = "revenue" | "operatingProfit" | "netIncome" | "operatingMargin" | "operatingCashFlow" | "investmentCashFlow" | "financingCashFlow" | "capex" | "netDebt" | "debtRatio" | "currentRatio" | "interestCoverage" | "roe" | "roa" | "eps" | "ebitda" | "per" | "pbr";
+export type FinancialMetric = "revenue" | "operatingProfit" | "netIncome" | "operatingMargin" | "netMargin" | "operatingCashFlow" | "investmentCashFlow" | "financingCashFlow" | "capex" | "freeCashFlow" | "netDebt" | "borrowings" | "borrowingsRatio" | "workingCapital" | "payables" | "debtRatio" | "currentRatio" | "interestCoverage" | "roe" | "roa" | "eps" | "ebitda" | "per" | "pbr";
 
 export type QueryAnalysis = "single" | "comparison" | "trend" | "cause";
 export type QueryOutput = "value" | "table" | "trend" | "comparison";
@@ -248,12 +415,12 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
   const range = q.match(/(20\d{2})\s*(?:~|〜|-|–|—|부터|에서)\s*(20\d{2})/);
   const yearStart = range ? Number(range[1]) : null;
   const yearEnd = range ? Number(range[2]) : null;
-  const recent = q.match(/(?:최근|지난|직전|과거)\s*(\d+)\s*(?:개년|년|연도)/);
+  const recent = q.match(/(?<!\d)(\d{1,2})\s*(?:개년치|개년|년치|년|연도)/);
   const recentYears = recent ? Math.max(2, Math.min(10, Number(recent[1]))) : null;
 
   let kind: ParsedDartQuery["kind"] = null;
   let mode: "cum" | "qtr" | null = null;
-  if (/하반기/.test(q)) kind = "annual";
+  if (/하반기/.test(q)) kind = null;
   else if (/2\s*분기/.test(q)) { kind = "half"; mode = "qtr"; }
   else if (/상반기|반기/.test(q)) kind = "half";
   else if (/1\s*분기/.test(q)) kind = "q1";
@@ -262,14 +429,21 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
   else if (/최신|최근 공시|가장 최근/.test(q)) kind = "latest";
 
   const metricHits: Array<[RegExp, FinancialMetric]> = [
-    [/영업이익률|영업마진|영업마진율|OPM/i, "operatingMargin"],
-    [/영업이익|영업익/i, "operatingProfit"],
-    [/당기순이익|순이익|순익|당기순익|반기순손익|분기순손익/i, "netIncome"],
+    [/(?:영업이익\s*[률율]|영업마진(?:율)?|OPM)/i, "operatingMargin"],
+    [/(?:당기)?순이익\s*[률율]|순이익률|순이익율|NPM/i, "netMargin"],
+    [/(?:영업이익|영업익)(?!\s*[률율])/i, "operatingProfit"],
+    [/(?:당기순이익|순이익|순익|당기순익|반기순손익|분기순손익|당기순손익|반기순이익|분기순이익)(?![률율])/i, "netIncome"],
     [/투자활동현금흐름|투자현금흐름|투자활동.*현금/i, "investmentCashFlow"],
     [/재무활동현금흐름|재무현금흐름|재무활동.*현금/i, "financingCashFlow"],
     [/영업활동현금흐름|영업현금흐름|영업현금|영업활동.*현금/i, "operatingCashFlow"],
     [/capex|설비투자|자본적지출|유형자산.?취득/i, "capex"],
+    [/EBITDA|에비타|감가상각전영업이익/i, "ebitda"],
+    [/FCF|잉여현금흐름|자유현금흐름/i, "freeCashFlow"],
     [/순차입금|순부채/i, "netDebt"],
+    [/차입금\s*의존도|차입금의존도/i, "borrowingsRatio"],
+    [/(?:^|[\s,])(?:총)?차입금(?!(?:의존도|의존율))(?=(?:은|이|을|의|만|[\s,?.!]|$))/i, "borrowings"],
+    [/순?운전자본|운전자본/i, "workingCapital"],
+    [/매입채무|매입채무및기타채무/i, "payables"],
     [/부채비율/i, "debtRatio"],
     [/유동비율/i, "currentRatio"],
     [/이자보상배율/i, "interestCoverage"],
@@ -279,7 +453,7 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
     [/EBITDA|에비타/i, "ebitda"],
     [/PER/i, "per"],
     [/PBR/i, "pbr"],
-    [/매출액|매출|매출실적/i, "revenue"],
+    [/(?:매출액|매출실적|수익\s*\(\s*매출액\s*\)|영업수익|매출(?=(?:이|은|을|의|과|및|[\s,.:!?]|$)))/i, "revenue"],
   ];
   const metrics = UNIQUE_METRICS(metricHits.filter(([re]) => re.test(q)).map(([, metric]) => metric));
   const ACCOUNT_ALIASES: Array<[string, string[]]> = [
@@ -301,7 +475,7 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
     ["지배기업의소유주에게귀속되는자본", ["지배기업의소유주에게귀속되는자본"]], ["자본금", ["자본금"]], ["기타불입자본", ["기타불입자본"]],
     ["기타포괄손익누계액", ["기타포괄손익누계액"]], ["이익잉여금", ["이익잉여금", "이익잉여금(결손금)"]], ["비지배지분", ["비지배지분"]], ["자본총계", ["자본총계"]],
     ["자본과부채총계", ["자본과부채총계"]], ["유동성장기부채", ["유동성장기부채", "유동성장기차입금", "유동성사채", "유동성장기사채", "비유동차입금의유동성대체부분"]],
-    ["수익", ["수익", "매출액", "수익(매출액)"]], ["매출원가", ["매출원가"]], ["매출총이익", ["매출총이익"]], ["판매비와관리비", ["판매비와관리비"]],
+    ["수익", ["수익", "영업수익"]], ["매출원가", ["매출원가"]], ["매출총이익", ["매출총이익"]], ["판매비와관리비", ["판매비와관리비"]],
     ["영업외손익", ["영업외손익"]], ["기타이익", ["기타이익"]], ["기타손실", ["기타손실"]], ["금융수익", ["금융수익"]], ["금융원가", ["금융원가"]],
     ["법인세차감전순손익", ["법인세차감전순손익"]], ["법인세비용", ["법인세비용"]], ["반기순손익", ["반기순손익", "당기순이익", "분기순손익"]],
     ["기타포괄손익", ["기타포괄손익"]], ["총포괄손익", ["총포괄손익"]], ["지배기업소유주귀속반기순손익", ["지배기업의소유주에게귀속되는반기순손익"]],
@@ -311,11 +485,11 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
     ["재무활동현금흐름", ["재무활동으로인한현금흐름", "재무활동현금흐름", "재무활동순현금흐름"]],
   ];
   const nq = N(q);
-  const directAccount = [...ACCOUNT_ALIASES].sort((a,b) => Math.max(...b[1].map(N)).length - Math.max(...a[1].map(N)).length).find(([, aliases]) => aliases.some((a) => nq.includes(N(a))))?.[0] ?? null;
+  const directAccount = [...ACCOUNT_ALIASES].sort((a, b) => Math.max(...b[1].map((x) => N(x).length)) - Math.max(...a[1].map((x) => N(x).length))).find(([, aliases]) => aliases.some((a) => nq.includes(N(a))) )?.[0] ?? null;
 
   const hasCauseIntent = /증가원인|감소원인|증가\s*이유|감소\s*이유|왜\s*(?:증가|감소|늘|줄)|원인|이유|왜/.test(q);
-  const hasComparison = /비교|차이|대비|전년|전년대비|vs|증감|늘었|줄었|증가|감소|높아|낮아|차이가/.test(q) || years.length >= 2 || !!range;
-  const hasTrend = /추이|트렌드|흐름|변화|최근\s*\d+\s*개년|연도별|기간별/.test(q) || !!recentYears;
+  const hasComparison = /비교|차이|대비|전년|전년대비|vs|증감|늘었|줄었|증가|감소|높아|낮아|차이가|보다/.test(q) || years.length >= 2 || !!range;
+  const hasTrend = /추이|트렌드|추세|연도별|기간별|변화(?:추이)?|흐름\s*(?:추이|변화)/.test(q) || !!recentYears;
   const analysis: QueryAnalysis = hasCauseIntent ? "cause" : hasTrend && !hasComparison ? "trend" : hasComparison ? "comparison" : "single";
 
   let output: QueryOutput = "value";
@@ -350,11 +524,17 @@ export const METRIC_LABELS: Record<FinancialMetric, string> = {
   operatingProfit: "영업이익",
   netIncome: "순이익",
   operatingMargin: "영업이익률",
+  netMargin: "순이익률",
   operatingCashFlow: "영업활동현금흐름",
   investmentCashFlow: "투자활동현금흐름",
   financingCashFlow: "재무활동현금흐름",
   capex: "CAPEX",
+  freeCashFlow: "FCF(잉여현금흐름)",
   netDebt: "순차입금",
+  borrowings: "총차입금",
+  borrowingsRatio: "차입금의존도",
+  workingCapital: "운전자본",
+  payables: "매입채무",
   debtRatio: "부채비율",
   currentRatio: "유동비율",
   interestCoverage: "이자보상배율",
@@ -367,21 +547,28 @@ export const METRIC_LABELS: Record<FinancialMetric, string> = {
 };
 
 export const metricConfig: Record<FinancialMetric, { sj: string[]; names: string[] }> = {
-  revenue: { sj: ["IS", "CIS"], names: ["매출액", "수익(매출액)", "영업수익", "매출"] },
-  operatingProfit: { sj: ["IS", "CIS"], names: ["영업이익", "영업이익(손실)"] },
-  netIncome: { sj: ["CIS", "IS"], names: ["반기순손익", "분기순손익", "당기순이익", "당기순이익(손실)", "연결당기순이익", "지배기업의소유주에게귀속되는당기순이익", "지배기업소유주지분당기순이익"] },
+  revenue: { sj: ["CIS", "IS"], names: ["매출액", "수익(매출액)", "영업수익", "매출"] },
+  operatingProfit: { sj: ["CIS", "IS"], names: ["영업이익", "영업이익(손실)"] },
+  netIncome: { sj: ["CIS", "IS"], names: ["반기순손익", "분기순손익", "당기순손익", "반기순이익", "분기순이익", "당기순이익", "당기순이익(손실)", "반기순이익(손실)", "분기순이익(손실)", "연결당기순이익", "연결당기순이익(손실)", "지배기업의소유주에게귀속되는당기순이익", "지배기업소유주지분당기순이익"] },
+  operatingMargin: { sj: ["CIS", "IS"], names: [] },
+  netMargin: { sj: ["CIS", "IS"], names: [] },
   operatingCashFlow: { sj: ["CF"], names: ["영업활동으로인한현금흐름", "영업활동현금흐름", "영업활동순현금흐름"] },
   investmentCashFlow: { sj: ["CF"], names: ["투자활동으로인한현금흐름", "투자활동현금흐름", "투자활동순현금흐름"] },
   financingCashFlow: { sj: ["CF"], names: ["재무활동으로인한현금흐름", "재무활동현금흐름", "재무활동순현금흐름"] },
   capex: { sj: ["CF"], names: ["유형자산의취득", "유형자산취득"] },
+  freeCashFlow: { sj: ["CF"], names: [] },
   netDebt: { sj: ["BS"], names: [] },
+  borrowings: { sj: ["BS"], names: [] },
+  borrowingsRatio: { sj: ["BS"], names: [] },
+  workingCapital: { sj: ["BS"], names: [] },
+  payables: { sj: ["BS"], names: ["매입채무", "매입채무및기타채무", "유동매입채무"] },
   debtRatio: { sj: ["BS"], names: ["부채비율"] },
   currentRatio: { sj: ["BS"], names: ["유동비율"] },
-  interestCoverage: { sj: ["IS", "CIS"], names: [] },
+  interestCoverage: { sj: ["CIS", "IS"], names: [] },
   roe: { sj: ["BS", "IS", "CIS"], names: [] },
   roa: { sj: ["BS", "IS", "CIS"], names: [] },
-  eps: { sj: ["IS", "CIS"], names: ["기본주당순손익", "기본주당순이익", "희석주당순손익"] },
-  ebitda: { sj: ["IS", "CIS"], names: [] },
+  eps: { sj: ["CIS", "IS"], names: ["기본주당순손익", "기본주당순이익", "희석주당순손익"] },
+  ebitda: { sj: ["CIS", "IS"], names: [] },
   per: { sj: [], names: [] },
   pbr: { sj: [], names: [] },
 };
