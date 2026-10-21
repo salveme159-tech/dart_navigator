@@ -38,45 +38,30 @@ export interface ExecutiveOnePagerProps {
   quote?: YahooQuotePayload | null;
   redFlags?: DisclosureRedFlag[];
   customBullets?: FactLockedBullet[];
+  /** 실제 DART viewer.do 본문 링크를 만드는 상위 컴포넌트 콜백. 커버(main.do) 직링크는 사용하지 않습니다. */
+  onOpenSource?: (term: string, rceptNo: string, basis: "CFS" | "OFS") => void;
 }
 
-export const DEFAULT_REFERENCE_QUARTERS: QuarterlyFinancialPoint[] = [
-  { period: "1Q24", rceptNo: "20240516000412", revenue: 1124, grossProfit: 216, sgaExpense: 158, operatingProfit: 58, netIncome: 46, totalAssets: 8420, totalLiabilities: 3120, totalEquity: 5300 },
-  { period: "2Q24", rceptNo: "20240814000891", revenue: 1294, grossProfit: 295, sgaExpense: 150, operatingProfit: 145, netIncome: 118, totalAssets: 8650, totalLiabilities: 3200, totalEquity: 5450 },
-  { period: "3Q24", rceptNo: "20241114000553", revenue: 1355, grossProfit: 309, sgaExpense: 157, operatingProfit: 152, netIncome: 124, totalAssets: 8810, totalLiabilities: 3240, totalEquity: 5570 },
-  { period: "4Q24", isFourthQuarterDerived: true, rceptNo: "20250321000778", revenue: 1554, grossProfit: 410, sgaExpense: 196, operatingProfit: 214, netIncome: 169, totalAssets: 9120, totalLiabilities: 3350, totalEquity: 5770 },
-  { period: "1Q25", rceptNo: "20250515000319", revenue: 1599, grossProfit: 400, sgaExpense: 210, operatingProfit: 190, separateOperatingProfit: 185, subsidiaryAndAdjProfit: 5, netIncome: 151, totalAssets: 9340, totalLiabilities: 3420, totalEquity: 5920, inventoryAllowance: 91 },
-  { period: "2Q25", rceptNo: "20250814000612", revenue: 1642, grossProfit: 424, sgaExpense: 181, operatingProfit: 243, separateOperatingProfit: 232, subsidiaryAndAdjProfit: 11, netIncome: 195, totalAssets: 9610, totalLiabilities: 3490, totalEquity: 6120 },
-  { period: "3Q25", rceptNo: "20251114000490", revenue: 1680, grossProfit: 408, sgaExpense: 176, operatingProfit: 232, separateOperatingProfit: 218, subsidiaryAndAdjProfit: 14, netIncome: 184, totalAssets: 9850, totalLiabilities: 3550, totalEquity: 6300 },
-  { period: "4Q25", isFourthQuarterDerived: true, rceptNo: "20260330000911", revenue: 1754, grossProfit: 353, sgaExpense: 242, operatingProfit: 111, separateOperatingProfit: 133, subsidiaryAndAdjProfit: -22, netIncome: 82, totalAssets: 10040, totalLiabilities: 3660, totalEquity: 6380, inventoryAllowance: 109 },
-  { period: "1Q26", rceptNo: "20260515000284", revenue: 1738, grossProfit: 476, sgaExpense: 189, operatingProfit: 287, separateOperatingProfit: 253, subsidiaryAndAdjProfit: 34, netIncome: 229, totalAssets: 10390, totalLiabilities: 3780, totalEquity: 6610 },
-  { period: "2Q26", rceptNo: "20260814000519", revenue: 1831, grossProfit: 491, sgaExpense: 196, operatingProfit: 295, separateOperatingProfit: 266, subsidiaryAndAdjProfit: 29, netIncome: 238, totalAssets: 10720, totalLiabilities: 3870, totalEquity: 6850 },
-  { period: "3Q26E", isEstimate: true, revenue: 1796, operatingProfit: 300, netIncome: 240 },
-  { period: "4Q26E", isEstimate: true, revenue: 1880, operatingProfit: 221, netIncome: 175 },
-];
+export const DEFAULT_REFERENCE_QUARTERS: QuarterlyFinancialPoint[] = [];
 
 export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
-  corpName = "공시 분석 대상 기업",
-  stockCode = "001440",
+  corpName = "DART 조회 대기",
+  stockCode = "",
   marketCls = "Y",
   quarters = DEFAULT_REFERENCE_QUARTERS,
-  quote = {
-    symbol: "001440.KS",
-    currentPrice: 14850,
-    marketCapWon: 1245000000000,
-    marketCapEok: 12450,
-    sharesOutstanding: 83838383,
-    fetchedAt: "2026-10-16 KST",
-    source: "YAHOO_FINANCE_LIVE",
-  },
+  quote = null,
   redFlags = [],
   customBullets,
+  onOpenSource,
 }) => {
   const [hoveredPoint, setHoveredPoint] = useState<QuarterlyFinancialPoint | null>(null);
   const [showVerificationModal, setShowVerificationModal] = useState(false);
 
   const verification = runDeterministicVerification(quarters);
   const metrics = computeFullMetrics(quarters, quote);
+  if (quarters.length === 0) {
+    return <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">실제 DART 분기 공시자료가 없어 1-Pager를 생성하지 않았습니다. API 인증과 공시 조회를 먼저 완료하세요.</div>;
+  }
 
   const actuals = quarters.filter((q) => !q.isEstimate);
   const latest = actuals[actuals.length - 1];
@@ -93,30 +78,7 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
     ? `분기 실적 — 이익률은 ${metrics.operatingMarginPct}%로 올랐고, 그 위쪽 몫(+${latest.subsidiaryAndAdjProfit}억)은 자회사에서 왔다`
     : `분기 실적 — 최근 분기 매출 ${latest?.revenue.toLocaleString()}억·영업이익률 ${metrics.operatingMarginPct}% 기록 (DART 원문 검증 완료)`;
 
-  const bullets: FactLockedBullet[] =
-    customBullets && customBullets.length > 0
-      ? customBullets
-      : [
-          {
-            tag: "바닥과 전환",
-            mainFact: `${minOpQuarter?.period}(영업이익률 ${((minOpQuarter.operatingProfit / minOpQuarter.revenue) * 100).toFixed(1)}%)가 바닥이고, 이후 분기부터 10%대 영업이익률 구간으로 올라섰다.`,
-            rceptNo: minOpQuarter?.rceptNo,
-          },
-          {
-            tag: "4분기 역풍 및 주석 팩트 체크",
-            mainFact:
-              "4Q25 영업이익은 111억원(6.3%)으로 직전 분기 대비 급감했다. 매출총이익률이 20.1%로 낮아졌고 판관비가 242억원으로 늘었다.",
-            subNote:
-              "원인은 공시로 특정되지 않는다. 같은 해 재고평가충당금이 91억에서 109억원으로 늘었다(공시 주석 확인, 연말 평가 반영 가능성 — 추정).",
-            rceptNo: "20260330000911",
-          },
-          {
-            tag: "자회사·연결조정 몫",
-            mainFact:
-              "2025년 분기 +5~+14억원(4Q25는 -22억원)이던 자회사·연결조정 몫(연결 영업이익 - 별도 영업이익)이 1Q26 +34억, 2Q26 +29억원이 됐다.",
-            rceptNo: latest?.rceptNo,
-          },
-        ];
+  const bullets: FactLockedBullet[] = customBullets ?? [];
 
   const chartWidth = 860;
   const leftPad = 56;
@@ -180,14 +142,11 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
                 <div className="text-stone-600">산식: {chk.formula}</div>
                 <div className="text-stone-800">{chk.note}</div>
                 {chk.rceptNo && (
-                  <a
-                    href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${chk.rceptNo}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-blue-700 hover:underline inline-flex items-center gap-1 mt-0.5"
-                  >
-                    DART 접수번호 #{chk.rceptNo} 원문 열기 <ExternalLink className="w-3 h-3" />
-                  </a>
+                  onOpenSource ? (
+                    <button type="button" onClick={() => onOpenSource(chk.label, chk.rceptNo!, "CFS")} className="text-blue-700 hover:underline inline-flex items-center gap-1 mt-0.5">
+                      DART 재무제표 본문 열기 (#{chk.rceptNo}) <ExternalLink className="w-3 h-3" />
+                    </button>
+                  ) : <span className="text-stone-500">DART 접수번호 #{chk.rceptNo} · 본문 링크를 사용할 수 없음</span>
                 )}
               </div>
             ))}
@@ -406,7 +365,7 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
                   <>
                     <circle cx={x} cy={yGpm} r="3" fill="#292524" />
                     <text x={x} y={yGpm - 7} fontSize="9.5" fontWeight="600" textAnchor="middle" fill="#292524">
-                      {gpm.toFixed(1)}
+                      {gpm !== null ? gpm.toFixed(1) : "—"}
                     </text>
                   </>
                 )}
@@ -578,16 +537,11 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
           <div key={idx} className="pl-2 border-l-2 border-stone-800">
             <div>
               <strong className="font-bold text-stone-950">• {b.tag}</strong> — {b.mainFact}
-              {b.rceptNo && (
-                <a
-                  href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${b.rceptNo}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="ml-1.5 text-[10px] text-stone-500 hover:text-stone-900 underline print:no-underline"
-                >
-                  [DART #{b.rceptNo}]
-                </a>
-              )}
+              {b.rceptNo && (onOpenSource ? (
+                <button type="button" onClick={() => onOpenSource(b.tag, b.rceptNo!, "CFS")} className="ml-1.5 text-[10px] text-stone-500 hover:text-stone-900 underline print:no-underline">
+                  [DART 재무제표 본문 #{b.rceptNo}]
+                </button>
+              ) : <span className="ml-1.5 text-[10px] text-stone-500">[DART #{b.rceptNo} · 본문 이동 미설정]</span>)}
             </div>
             {b.subNote && (
               <div className="pl-3 mt-0.5 text-stone-600 text-[12px]">
@@ -610,14 +564,9 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
                 <span>
                   <strong className="text-amber-900">[{rf.category}]</strong> {rf.reportNm} ({rf.rceptDt})
                 </span>
-                <a
-                  href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rf.rceptNo}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-blue-700 hover:underline text-[11px]"
-                >
-                  원문 확인 ↗
-                </a>
+                {onOpenSource ? (
+                  <button type="button" onClick={() => onOpenSource("재무상태표", rf.rceptNo, "CFS")} className="text-blue-700 hover:underline text-[11px]">DART 본문 확인 ↗</button>
+                ) : <span className="text-stone-500 text-[11px]">접수번호 #{rf.rceptNo}</span>}
               </li>
             ))}
           </ul>

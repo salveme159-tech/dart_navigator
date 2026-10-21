@@ -1,38 +1,72 @@
+import { apiUrl, apiBaseUrl } from "./apiBase";
+
 export interface RawDartAccountMap {
-  매출액: number | null;
-  매출원가: number | null;
-  영업이익: number | null;
-  순이익: number | null;
-  자산총계: number | null;
-  부채총계: number | null;
-  자본총계: number | null;
-  유동자산: number | null;
-  유동부채: number | null;
-  현금및현금성자산: number | null;
-  단기금융상품: number | null;
-  매출채권: number | null;
-  재고자산: number | null;
-  매입채무: number | null;
-  단기차입금: number | null;
-  유동성장기부채: number | null;
-  사채: number | null;
-  장기차입금: number | null;
-  총차입금_정밀원화합산: number | null;
-  차입금의존도_정밀산출: number | null;
-  영업현금흐름: number | null;
-  유형자산취득_CAPEX: number | null;
-  감가상각비: number | null;
-  무형자산상각비: number | null;
-  금융원가: number | null;
+  매출액: number;
+  영업이익: number;
+  순이익: number;
+  자산총계: number;
+  부채총계: number;
+  자본총계: number;
+  유동자산: number;
+  유동부채: number;
+  현금및현금성자산: number;
+  단기금융상품: number;
+  매출채권: number;
+  재고자산: number;
+  매입채무: number;
+  단기차입금: number;
+  유동성장기부채: number;
+  사채: number;
+  장기차입금: number;
+  영업현금흐름: number;
+  유형자산취득_CAPEX: number;
+  감가상각비: number;
+  금융원가: number;
 }
 
-export interface PeriodFinancialSnapshot {
-  periodKey: string;
-  periodLabel: string;
-  reportName: string;
-  rceptNo: string;
-  fsDiv: "CFS" | "OFS";
-  accounts: RawDartAccountMap;
+export interface QuarterlyOnePagerItem {
+  period: string;
+  isEstimate?: boolean;
+  isFourthQuarterDerived?: boolean;
+  rceptNo?: string;
+  basisCode?: "CFS" | "OFS";
+  revenue: number;
+  grossProfit?: number;
+  sgaExpense?: number;
+  operatingProfit: number;
+  separateOperatingProfit?: number;
+  subsidiaryAndAdjProfit?: number;
+  netIncome?: number;
+}
+
+export interface RawDartRow {
+  corp_code?: string;
+  bsns_year?: string;
+  reprt_code?: string;
+  sj_div?: string;
+  sj_nm?: string;
+  account_id?: string;
+  account_nm?: string;
+  thstrm_nm?: string;
+  thstrm_amount?: string;
+  thstrm_add_amount?: string;
+  frmtrm_nm?: string;
+  frmtrm_amount?: string;
+  bfefrmtrm_nm?: string;
+  bfefrmtrm_amount?: string;
+  rcept_no?: string;
+  currency?: string;
+  unit?: string;
+}
+
+export interface ServerMetricValue {
+  value: number | null;
+  unit: string;
+  formula: string | null;
+  citation: string;
+  available?: boolean;
+  lines?: string[];
+  disclaimer?: string | null;
 }
 
 export interface CompanyFinancialRecord {
@@ -42,482 +76,257 @@ export interface CompanyFinancialRecord {
   reportName: string;
   period: string;
   rceptNo: string;
-  fsDiv: "CFS" | "OFS";
-  isLiveApiFetched: boolean;
+  basisCode?: "CFS" | "OFS";
+  isLiveApiFetched?: boolean;
   verificationPassed: boolean;
   verificationNote: string;
   accounts: RawDartAccountMap;
-  history4Y: PeriodFinancialSnapshot[];
+  quarterlyHistory?: QuarterlyOnePagerItem[];
+  rawRows?: RawDartRow[];
+  /** 서버에서 실제 원천 계정으로 계산한 지표. 키가 존재하면서 null이면 산출 불가를 뜻합니다. */
+  serverMetrics?: Record<string, ServerMetricValue | null>;
+  /** 카드용 기본 계정값. 동일한 DART 재무제표에서 행 이름·계정코드를 확인해 서버에서 추출합니다. */
+  rawAccountMetrics?: Record<string, ServerMetricValue | null>;
 }
 
-export interface CorpCodeEntry {
-  corpCode: string;
-  corpName: string;
-  stockCode: string;
+// 초기 화면에 표시할 회사 이름만 둡니다. 기업코드·접수번호·재무 수치는 반드시 DART API에서 가져옵니다.
+export const INITIAL_DART_COMPANIES = ["대한전선"] as const;
+
+const EMPTY_ACCOUNT_MAP: RawDartAccountMap = {
+  매출액: Number.NaN, 영업이익: Number.NaN, 순이익: Number.NaN,
+  자산총계: Number.NaN, 부채총계: Number.NaN, 자본총계: Number.NaN,
+  유동자산: Number.NaN, 유동부채: Number.NaN, 현금및현금성자산: Number.NaN,
+  단기금융상품: Number.NaN, 매출채권: Number.NaN, 재고자산: Number.NaN, 매입채무: Number.NaN,
+  단기차입금: Number.NaN, 유동성장기부채: Number.NaN, 사채: Number.NaN, 장기차입금: Number.NaN,
+  영업현금흐름: Number.NaN, 유형자산취득_CAPEX: Number.NaN, 감가상각비: Number.NaN, 금융원가: Number.NaN,
+};
+
+// 조회 전 자리표시자입니다. 숫자를 제공하는 스냅샷이 아니며, 화면에서는 모든 값이 '자료 없음'으로 표시됩니다.
+export const EMPTY_DART_RECORD: CompanyFinancialRecord = {
+  corpCode: "", corpName: "DART 조회 대기", stockCode: "", reportName: "실시간 조회 전", period: "자료 미수집",
+  rceptNo: "", isLiveApiFetched: false, verificationPassed: false,
+  verificationNote: "OpenDART 인증키 검증 및 실시간 조회가 필요합니다.", accounts: EMPTY_ACCOUNT_MAP, quarterlyHistory: [], rawRows: [],
+};
+
+function parseAmountToEok(raw: unknown): number {
+  if (raw === undefined || raw === null) return Number.NaN;
+  const cleaned = String(raw).replace(/,/g, "").trim();
+  if (!cleaned || cleaned === "-" || cleaned === "—") return Number.NaN;
+  const negativeParentheses = /^\(.*\)$/.test(cleaned);
+  const numericText = negativeParentheses ? `-${cleaned.slice(1, -1)}` : cleaned;
+  const num = Number(numericText);
+  if (!Number.isFinite(num)) return Number.NaN;
+  // 억원 환산 시 정수 반올림하지 않습니다. 원 단위 원문은 rawRows로 별도 보존합니다.
+  return num / 100_000_000;
 }
 
-export function buildDartDirectUrl(rceptNo: string, corpName: string): string {
-  const clean = String(rceptNo || "").trim();
-  if (/^\d{14}$/.test(clean)) {
-    return "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=" + clean;
-  }
-  return "https://dart.fss.or.kr/dsab007/detailSearch.ax?textCrpNm=" + encodeURIComponent(corpName);
-}
-
-export function buildDartSectionDeepLink(rceptNo: string, corpName: string): string {
-  return buildDartDirectUrl(rceptNo, corpName);
-}
-
-const CORP_CODE_DIRECTORY: CorpCodeEntry[] = [
-  { corpName: "대한전선", corpCode: "00113526", stockCode: "001440" },
-  { corpName: "가온전선", corpCode: "00100939", stockCode: "000500" },
-  { corpName: "LS", corpCode: "00117601", stockCode: "006260" },
-  { corpName: "삼성전자", corpCode: "00126380", stockCode: "005930" },
-  { corpName: "SK하이닉스", corpCode: "00164779", stockCode: "000660" },
-  { corpName: "효성중공업", corpCode: "01318636", stockCode: "298040" },
-  { corpName: "HD현대일렉트릭", corpCode: "01204959", stockCode: "267260" },
-  { corpName: "일진전기", corpCode: "00688996", stockCode: "103590" },
-  { corpName: "에넥스", corpCode: "00142492", stockCode: "011090" },
-  { corpName: "에이스테크", corpCode: "00579005", stockCode: "088800" },
-  { corpName: "현대자동차", corpCode: "00164742", stockCode: "005380" },
-  { corpName: "기아", corpCode: "00106641", stockCode: "000270" },
-  { corpName: "POSCO홀딩스", corpCode: "00155319", stockCode: "005490" },
-  { corpName: "한화에어로스페이스", corpCode: "00162461", stockCode: "012450" },
-  { corpName: "두산에너빌리티", corpCode: "00159616", stockCode: "034020" },
-  { corpName: "한미반도체", corpCode: "00161383", stockCode: "042700" },
-];
-
-export async function loadAllDartCorpCodes(_apiKey: string): Promise<CorpCodeEntry[]> {
-  return CORP_CODE_DIRECTORY;
-}
-
-async function fetchWithTimeout(url: string, timeoutMs = 7000): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function fetchOpenDartJson(targetUrl: string): Promise<any | null> {
-  const gateways = [
-    "https://corsproxy.io/?" + encodeURIComponent(targetUrl),
-    "https://api.allorigins.win/raw?url=" + encodeURIComponent(targetUrl),
-    "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(targetUrl),
-  ];
-
-  for (const gw of gateways) {
-    try {
-      const res = await fetchWithTimeout(gw, 7000);
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (!text || text.trim().startsWith("<")) continue;
-      const json = JSON.parse(text);
-      if (json && typeof json === "object") return json;
-    } catch {}
-  }
-  return null;
-}
-
-export async function findCorpEntryByName(queryName: string, apiKey: string): Promise<CorpCodeEntry | null> {
-  const clean = (queryName || "").trim();
-  if (!clean) return null;
-  const lower = clean.toLowerCase();
-
-  if (/^\d{8}$/.test(clean)) {
-    const url = `https://opendart.fss.or.kr/api/company.json?crtfc_key=${encodeURIComponent(apiKey.trim())}&corp_code=${clean}`;
-    const info = await fetchOpenDartJson(url);
-    if (info && info.status === "000") {
-      return { corpCode: clean, corpName: info.corp_name || clean, stockCode: info.stock_code || "" };
-    }
-  }
-
-  const exact = CORP_CODE_DIRECTORY.find(
-    (c) => c.corpName.toLowerCase() === lower || c.stockCode === clean
-  );
-  if (exact) return exact;
-
-  const partial = CORP_CODE_DIRECTORY.find((c) => c.corpName.toLowerCase().includes(lower));
-  if (partial) return partial;
-
-  return null;
-}
-
-function parseRawWon(val: any): number | null {
-  if (val === undefined || val === null) return null;
-  const str = String(val).replace(/,/g, "").trim();
-  if (!str || str === "-") return null;
-  const num = Number(str);
-  return Number.isNaN(num) ? null : num;
-}
-
-function wonToEok(won: number | null): number | null {
-  if (won === null) return null;
-  return Number((won / 100_000_000).toFixed(2));
-}
-
-export function parseDartFullStatementRows(rows: any[]): RawDartAccountMap {
-  const usedRowIndices = new Set<number>();
-
-  const findRawWon = (
-    sjDivs: string[],
-    idPatterns: RegExp[],
-    namePatterns: RegExp[],
-    useAbs = false,
-    lockRow = false,
-    preferCumulativeFlow = false
-  ): number | null => {
-    const extractWon = (r: any) => {
-      const isFlow = r.sj_div === "IS" || r.sj_div === "CIS";
-      if (isFlow && preferCumulativeFlow) {
-        const cum = parseRawWon(r.thstrm_add_amount);
-        if (cum !== null) return cum;
-      }
-      const primary = parseRawWon(r.thstrm_amount);
-      if (primary !== null) return primary;
-      return parseRawWon(r.thstrm_add_amount);
+/** DART 원문 계정이 확인된 경우에만 금액을 채웁니다. 없거나 읽을 수 없는 계정은 NaN(자료 없음)으로 유지합니다. */
+export function parseDartFullStatementRows(rows: RawDartRow[], basis: "CFS" | "OFS" = "CFS"): RawDartAccountMap {
+  const findVal = (sjDivs: string[], ids: RegExp[], names: RegExp[], absolute = false): number => {
+    const preferredSections = sjDivs.length === 1
+      ? sjDivs
+      : basis === "CFS"
+        ? ["CIS", "IS", ...sjDivs.filter((s) => s !== "CIS" && s !== "IS")]
+        : ["IS", "CIS", ...sjDivs.filter((s) => s !== "CIS" && s !== "IS")];
+    const eligible = rows.filter((row) => preferredSections.includes(row.sj_div ?? ""))
+      .sort((a, b) => preferredSections.indexOf(a.sj_div ?? "") - preferredSections.indexOf(b.sj_div ?? ""));
+    const rawValue = (row: RawDartRow) => {
+      const isBalanceRow = sjDivs.length === 1 && sjDivs[0] === "BS";
+      const raw = isBalanceRow ? (row.thstrm_amount || row.thstrm_add_amount) : (row.thstrm_add_amount || row.thstrm_amount);
+      const value = parseAmountToEok(raw);
+      return Number.isFinite(value) ? (absolute ? Math.abs(value) : value) : Number.NaN;
     };
-
-    for (let i = 0; i < rows.length; i++) {
-      if (lockRow && usedRowIndices.has(i)) continue;
-      const r = rows[i];
-      if (sjDivs.length > 0 && !sjDivs.includes(r.sj_div)) continue;
-      const accId = String(r.account_id || "").trim();
-      if (accId && accId !== "-표준계정코드 미사용-" && idPatterns.some((re) => re.test(accId))) {
-        const v = extractWon(r);
-        if (v !== null) {
-          if (lockRow) usedRowIndices.add(i);
-          return useAbs ? Math.abs(v) : v;
-        }
-      }
+    // 계정코드는 공시 표준 태그를 먼저 찾되, 동일 태그가 IS/CIS에 있으면 기준별 우선순위가 적용된 행을 선택합니다.
+    for (const id of ids) {
+      const row = eligible.find((candidate) => id.test(String(candidate.account_id ?? "")) && Number.isFinite(rawValue(candidate)));
+      if (row) return rawValue(row);
     }
-
-    for (let i = 0; i < rows.length; i++) {
-      if (lockRow && usedRowIndices.has(i)) continue;
-      const r = rows[i];
-      if (sjDivs.length > 0 && !sjDivs.includes(r.sj_div)) continue;
-      const cleanNm = String(r.account_nm || "")
-        .replace(/\(주\d*\)/g, "")
-        .replace(/\[.*?\]/g, "")
-        .replace(/\s+/g, "");
-      if (namePatterns.some((re) => re.test(cleanNm))) {
-        const v = extractWon(r);
-        if (v !== null) {
-          if (lockRow) usedRowIndices.add(i);
-          return useAbs ? Math.abs(v) : v;
-        }
-      }
+    const normalized = (value: string) => value.replace(/[\s·ㆍ]/g, "");
+    // 별칭의 선언 순서와 정확 일치 여부를 함께 평가해 '수익' 같은 넓은 표현이 다른 계정을 잡지 않게 합니다.
+    for (const re of names) {
+      const row = eligible.find((candidate) => {
+        const name = normalized(String(candidate.account_nm ?? ""));
+        const exactPattern = re.source.startsWith("^") && re.source.endsWith("$");
+        return re.test(name) && (!exactPattern || re.test(name)) && Number.isFinite(rawValue(candidate));
+      });
+      if (row) return rawValue(row);
     }
-    return null;
+    return Number.NaN;
   };
-
-  const sumAllMatchingRawWon = (
-    sjDivs: string[],
-    idPatterns: RegExp[],
-    namePatterns: RegExp[],
-    useAbs = true
-  ): number | null => {
-    let sum = 0;
-    let found = false;
-    for (let i = 0; i < rows.length; i++) {
-      if (usedRowIndices.has(i)) continue;
-      const r = rows[i];
-      if (sjDivs.length > 0 && !sjDivs.includes(r.sj_div)) continue;
-      const accId = String(r.account_id || "").trim();
-      const cleanNm = String(r.account_nm || "")
-        .replace(/\(주\d*\)/g, "")
-        .replace(/\[.*?\]/g, "")
-        .replace(/\s+/g, "");
-
-      const idMatched =
-        accId && accId !== "-표준계정코드 미사용-" && idPatterns.some((re) => re.test(accId));
-      const nmMatched = namePatterns.some((re) => re.test(cleanNm));
-
-      if (idMatched || nmMatched) {
-        const v = parseRawWon(r.thstrm_amount ?? r.thstrm_add_amount);
-        if (v !== null) {
-          usedRowIndices.add(i);
-          sum += useAbs ? Math.abs(v) : v;
-          found = true;
-        }
-      }
-    }
-    return found ? sum : null;
-  };
-
-  const revWon = findRawWon(
-    ["IS", "CIS"],
-    [/ifrs-full_Revenue$/i, /dart_OperatingRevenue$/i],
-    [/^매출액$/, /^수익\(매출액\)$/, /^영업수익$/, /^I\.매출액$/],
-    false,
-    false,
-    true
-  );
-  const cogsWon = findRawWon(
-    ["IS", "CIS"],
-    [/ifrs-full_CostOfSales$/i],
-    [/^매출원가$/, /^II\.매출원가$/],
-    true,
-    false,
-    true
-  );
-  const opWon = findRawWon(
-    ["IS", "CIS"],
-    [/dart_OperatingIncomeLoss$/i, /ifrs-full_ProfitLossFromOperatingActivities$/i],
-    [/^영업이익/, /^영업손익/],
-    false,
-    false,
-    true
-  );
-  const netWon = findRawWon(
-    ["IS", "CIS"],
-    [/ifrs-full_ProfitLoss$/i],
-    [/^당기순이익/, /^반기순이익/, /^분기순이익/, /^연결당기순이익/, /^연결반기순이익/, /^연결분기순이익/],
-    false,
-    false,
-    true
-  );
-
-  const assetsWon = findRawWon(["BS"], [/ifrs-full_Assets$/i], [/^자산총계$/, /^총자산$/]);
-  const liabWon = findRawWon(["BS"], [/ifrs-full_Liabilities$/i], [/^부채총계$/, /^총부채$/]);
-  const equityWon = findRawWon(["BS"], [/ifrs-full_Equity$/i], [/^자본총계$/, /^총자본$/]);
-  const curAssetsWon = findRawWon(["BS"], [/ifrs-full_CurrentAssets$/i], [/^유동자산$/]);
-  const curLiabWon = findRawWon(["BS"], [/ifrs-full_CurrentLiabilities$/i], [/^유동부채$/]);
-  const cashWon = findRawWon(["BS"], [/ifrs-full_CashAndCashEquivalents$/i], [/^현금및현금성자산$/]);
-  const stFinWon = findRawWon(["BS"], [/dart_ShortTermDeposits/i], [/^단기금융상품$/, /^단기투자자산$/]);
-  const arWon = findRawWon(["BS"], [/ifrs-full_TradeAndOtherCurrentReceivables$/i], [/^매출채권/, /^단기매출채권/]);
-  const invWon = findRawWon(["BS"], [/ifrs-full_Inventories$/i], [/^재고자산$/]);
-  const apWon = findRawWon(["BS"], [/ifrs-full_TradeAndOtherCurrentPayables$/i], [/^매입채무/, /^단기매입채무/]);
-
-  const stBorrowWon = findRawWon(
-    ["BS"],
-    [/ifrs-full_ShorttermBorrowings$/i],
-    [/^단기차입금$/],
-    false,
-    true
-  );
-  const curLongBorrowWon = findRawWon(
-    ["BS"],
-    [/ifrs-full_CurrentPortionOfLongtermBorrowings$/i, /dart_CurrentPortionOfLongTermBorrowings/i],
-    [/^유동성장기부채$/, /^유동성장기차입금$/, /^유동성장기금융부채$/, /^유동성사채$/, /^유동성장기차입금및사채$/],
-    false,
-    true
-  );
-  const bondsWon = findRawWon(
-    ["BS"],
-    [/ifrs-full_BondsIssued$/i],
-    [/^사채$/, /^회사채$/],
-    false,
-    true
-  );
-  const ltBorrowWon = findRawWon(
-    ["BS"],
-    [/ifrs-full_LongtermBorrowings$/i],
-    [/^장기차입금$/, /^장기금융부채$/, /^장기차입금및사채$/],
-    false,
-    true
-  );
-
-  const totalDebtWon =
-    (stBorrowWon || 0) + (curLongBorrowWon || 0) + (bondsWon || 0) + (ltBorrowWon || 0);
-  const hasAnyDebt =
-    stBorrowWon !== null || curLongBorrowWon !== null || bondsWon !== null || ltBorrowWon !== null;
-
-  const exactDebtDependencyPct =
-    hasAnyDebt && assetsWon && assetsWon > 0
-      ? Number(((totalDebtWon / assetsWon) * 100).toFixed(2))
-      : null;
-
-  const ocfWon = findRawWon(
-    ["CF"],
-    [/ifrs-full_CashFlowsFromUsedInOperatingActivities$/i],
-    [/^영업활동현금흐름/, /^영업활동으로인한현금흐름/]
-  );
-  const capexWon = findRawWon(
-    ["CF"],
-    [/ifrs-full_PurchaseOfPropertyPlantAndEquipment$/i],
-    [/유형자산의취득/, /유형자산의증가/],
-    true
-  );
-
-  const deprWon = sumAllMatchingRawWon(
-    ["CF", "IS", "CIS"],
-    [
-      /ifrs-full_AdjustmentsForDepreciationExpense$/i,
-      /ifrs-full_DepreciationAndAmortisationExpense$/i,
-      /ifrs-full_DepreciationExpense$/i,
-      /dart_DepreciationExpense$/i,
-    ],
-    [
-      /^감가상각비$/,
-      /^유형자산감가상각비$/,
-      /^유무형자산상각비$/,
-      /^감가상각비및무형자산상각비$/,
-      /^유형자산및투자부동산감가상각비$/,
-      /^투자부동산감가상각비$/,
-      /^사용권자산감가상각비$/,
-    ],
-    true
-  );
-
-  const amortWon = sumAllMatchingRawWon(
-    ["CF", "IS", "CIS"],
-    [/ifrs-full_AdjustmentsForAmortisationExpense$/i, /ifrs-full_AmortisationExpense$/i],
-    [/^무형자산상각비$/, /^무형자산감가상각비$/],
-    true
-  );
-
-  const finCostWon = findRawWon(
-    ["IS", "CIS", "CF"],
-    [/ifrs-full_FinanceCosts$/i, /ifrs-full_InterestExpense$/i],
-    [/^금융원가$/, /^금융비용$/, /^이자비용/],
-    true,
-    false,
-    true
-  );
 
   return {
-    매출액: wonToEok(revWon),
-    매출원가: wonToEok(cogsWon),
-    영업이익: wonToEok(opWon),
-    순이익: wonToEok(netWon),
-    자산총계: wonToEok(assetsWon),
-    부채총계: wonToEok(liabWon),
-    자본총계: wonToEok(equityWon),
-    유동자산: wonToEok(curAssetsWon),
-    유동부채: wonToEok(curLiabWon),
-    현금및현금성자산: wonToEok(cashWon),
-    단기금융상품: wonToEok(stFinWon),
-    매출채권: wonToEok(arWon),
-    재고자산: wonToEok(invWon),
-    매입채무: wonToEok(apWon),
-    단기차입금: wonToEok(stBorrowWon),
-    유동성장기부채: wonToEok(curLongBorrowWon),
-    사채: wonToEok(bondsWon),
-    장기차입금: wonToEok(ltBorrowWon),
-    총차입금_정밀원화합산: hasAnyDebt ? wonToEok(totalDebtWon) : null,
-    차입금의존도_정밀산출: exactDebtDependencyPct,
-    영업현금흐름: wonToEok(ocfWon),
-    유형자산취득_CAPEX: wonToEok(capexWon),
-    감가상각비: wonToEok(deprWon),
-    무형자산상각비: wonToEok(amortWon),
-    금융원가: wonToEok(finCostWon),
+    매출액: findVal(["IS", "CIS"], [/^ifrs-full_Revenue$/i, /^dart_OperatingRevenue$/i], [/^매출액$/, /^수익\(매출액\)$/, /^영업수익$/, /^매출$/]),
+    영업이익: findVal(["IS", "CIS"], [/^dart_OperatingIncomeLoss$/i, /^ifrs-full_ProfitLossFromOperatingActivities$/i], [/^영업이익(?:\(손실\))?$/, /^영업손익$/]),
+    순이익: findVal(["IS", "CIS"], [/^ifrs-full_ProfitLoss$/i], [/^당기순이익(?:\(손실\))?$/, /^당기순손익$/, /^연결당기순이익$/, /^분기순이익$/, /^반기순이익$/]),
+    자산총계: findVal(["BS"], [/^ifrs-full_Assets$/i], [/^자산총계$/, /^총자산$/]),
+    부채총계: findVal(["BS"], [/^ifrs-full_Liabilities$/i], [/^부채총계$/, /^총부채$/]),
+    자본총계: findVal(["BS"], [/^ifrs-full_Equity$/i], [/^자본총계$/, /^총자본$/]),
+    유동자산: findVal(["BS"], [/^ifrs-full_CurrentAssets$/i], [/^유동자산(?:합계)?$/]),
+    유동부채: findVal(["BS"], [/^ifrs-full_CurrentLiabilities$/i], [/^유동부채(?:합계)?$/]),
+    현금및현금성자산: findVal(["BS"], [/^ifrs-full_CashAndCashEquivalents$/i], [/^현금(?:및|과)현금성자산(?:합계)?$/]),
+    단기금융상품: findVal(["BS"], [/^dart_ShortTermDepositsNotClassifiedAsCashEquivalents$/i], [/^단기금융상품(?:합계)?$/, /^단기투자자산$/, /^단기금융자산$/]),
+    매출채권: findVal(["BS"], [/^ifrs-full_TradeAndOtherCurrentReceivables$/i], [/^매출채권(?:및기타채권)?$/, /^단기매출채권$/]),
+    재고자산: findVal(["BS"], [/^ifrs-full_Inventories$/i], [/^재고자산(?:합계)?$/, /^유동재고자산$/]),
+    매입채무: findVal(["BS"], [/^ifrs-full_TradeAndOtherCurrentPayables$/i], [/^매입채무$/, /^매입채무및기타채무$/, /^유동매입채무$/]),
+    단기차입금: findVal(["BS"], [/^ifrs-full_ShorttermBorrowings$/i], [/^단기차입금$/]),
+    유동성장기부채: findVal(["BS"], [/^ifrs-full_CurrentPortionOfLongtermBorrowings$/i], [/^유동성장기부채$/, /^유동성장기차입금$/, /^유동성장기사채$/, /^비유동차입금의유동성대체부분$/]),
+    사채: findVal(["BS"], [/^ifrs-full_BondsIssued$/i], [/^사채$/, /^회사채$/]),
+    장기차입금: findVal(["BS"], [/^ifrs-full_LongtermBorrowings$/i], [/^장기차입금$/, /^장기차입부채$/, /^비유동차입금$/]),
+    영업현금흐름: findVal(["CF"], [/^ifrs-full_CashFlowsFromUsedInOperatingActivities$/i], [/^영업활동으로인한현금흐름$/, /^영업활동현금흐름$/, /^영업활동순현금흐름$/]),
+    유형자산취득_CAPEX: findVal(["CF"], [/^ifrs-full_PurchaseOfPropertyPlantAndEquipment$/i], [/^유형자산의취득$/, /^유형자산의증가$/], true),
+    감가상각비: findVal(["CF", "IS", "CIS"], [/^ifrs-full_AdjustmentsForDepreciationExpense$/i, /^ifrs-full_DepreciationAndAmortisationExpense$/i], [/^감가상각비$/, /^유무형자산상각비$/, /^유형자산감가상각비$/, /^무형자산상각비$/, /^사용권자산상각비$/], true),
+    금융원가: findVal(["IS", "CIS"], [/^ifrs-full_FinanceCosts$/i], [/^금융원가$/, /^금융비용$/, /^이자비용$/]),
   };
 }
 
-async function fetchSinglePeriodFromDart(
-  corpCode: string,
-  bsnsYear: string,
-  reprtCode: string,
-  periodKey: string,
-  periodLabel: string,
-  reportTitle: string,
-  apiKey: string
-): Promise<{ snap: PeriodFinancialSnapshot | null; apiErr?: string }> {
-  for (const fsDiv of ["CFS", "OFS"] as const) {
-    const url =
-      `https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json?crtfc_key=${encodeURIComponent(apiKey)}` +
-      `&corp_code=${corpCode}&bsns_year=${bsnsYear}&reprt_code=${reprtCode}&fs_div=${fsDiv}`;
-
-    const json = await fetchOpenDartJson(url);
-    if (!json) continue;
-
-    if (json.status === "010" || json.status === "011" || json.status === "020") {
-      return { snap: null, apiErr: `OpenDART API 오류(${json.status}): ${json.message}` };
-    }
-
-    if (json.status === "000" && Array.isArray(json.list) && json.list.length > 0) {
-      const accounts = parseDartFullStatementRows(json.list);
-      const rceptNo = String(json.list[0]?.rcept_no || "");
-      return {
-        snap: {
-          periodKey,
-          periodLabel,
-          reportName: `${reportTitle} (${fsDiv === "CFS" ? "연결" : "별도"})`,
-          rceptNo,
-          fsDiv,
-          accounts,
-        },
-      };
-    }
-  }
-  return { snap: null };
+function unwrapTrpc(payload: any): any {
+  return payload?.result?.data?.json ?? payload?.result?.data ?? payload;
 }
 
+async function readTrpc(path: string, apiKey: string): Promise<{ response: Response; data: any }> {
+  const input = encodeURIComponent(JSON.stringify({ json: {} }));
+  const response = await fetch(apiUrl(`/api/trpc/${path}?input=${input}`), {
+    method: "GET",
+    headers: { "X-OpenDART-Key": apiKey.trim() },
+    credentials: apiBaseUrl ? "omit" : "same-origin",
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { response, data: unwrapTrpc(payload), payload } as any;
+}
+
+export type DartCompanySearchResult = { name: string; code: string; stock: string };
+
+export async function searchLiveDartCompanies(query: string, apiKey: string, limit = 10): Promise<DartCompanySearchResult[]> {
+  const clean = query.trim();
+  if (clean.length < 1) return [];
+  const input = encodeURIComponent(JSON.stringify({ json: { query: clean, limit } }));
+  const response = await fetch(apiUrl(`/api/trpc/dart.searchCompanies?input=${input}`), {
+    headers: { "X-OpenDART-Key": apiKey.trim() },
+    credentials: apiBaseUrl ? "omit" : "same-origin",
+  });
+  const payload = await response.json().catch(() => ({}));
+  const data = unwrapTrpc(payload);
+  if (!response.ok || !Array.isArray(data)) return [];
+  return data.filter((row: any) => row && typeof row.name === "string" && typeof row.code === "string") as DartCompanySearchResult[];
+}
+
+export async function validateDartApiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
+  const normalized = apiKey.trim();
+  if (!/^[A-Za-z0-9]{40}$/.test(normalized)) {
+    return { valid: false, message: "OpenDART 인증키는 영문·숫자 40자리여야 합니다." };
+  }
+  if (/^(DEMO|VERIFIED)/i.test(normalized)) {
+    return { valid: false, message: "데모용 문구는 실제 DART 인증키가 아닙니다. 발급받은 키를 입력하세요." };
+  }
+  try {
+    const { response, data, payload } = await readTrpc("dart.validateKey", normalized) as any;
+    if (!response.ok || data?.valid !== true) {
+      return { valid: false, message: data?.message ?? payload?.error?.json?.message ?? payload?.error?.message ?? "DART 인증키 검증에 실패했습니다. 키와 서버 API 연결을 확인하세요." };
+    }
+    return { valid: true, message: `DART 인증 성공 · 기업 ${Number(data.companyCount ?? 0).toLocaleString("ko-KR")}개 인덱스 확인` };
+  } catch {
+    return { valid: false, message: "DART API 서버에 연결하지 못했습니다. GitHub Pages만으로는 조회할 수 없으므로 Express API 서버가 필요합니다." };
+  }
+}
+
+/** 실제 OpenDART 서버 결과만 반환합니다. 캐시·기준 스냅샷·임의 수치로 폴백하지 않습니다. */
 export async function fetchLiveDartCompanyRecord(
   corpNameInput: string,
-  apiKey: string
+  apiKey: string,
+  includeHistory = false,
+  basis: "CFS" | "OFS" = "CFS",
+  force = false,
 ): Promise<{ record: CompanyFinancialRecord | null; errorMsg?: string }> {
-  const cleanKey = (apiKey || "").trim();
-  if (!cleanKey || cleanKey.length < 20 || cleanKey.startsWith("VERIFIED")) {
+  const cleanName = corpNameInput.trim();
+  if (!cleanName) return { record: null, errorMsg: "기업명을 입력하세요." };
+  try {
+    const input = encodeURIComponent(JSON.stringify({ json: { company: cleanName, force, includeHistory, basis } }));
+    const response = await fetch(apiUrl(`/api/trpc/dart.snapshot?input=${input}`), {
+      method: "GET",
+      headers: { "X-OpenDART-Key": apiKey.trim() },
+      credentials: apiBaseUrl ? "omit" : "same-origin",
+    });
+    const payload = await response.json().catch(() => ({}));
+    const data = unwrapTrpc(payload);
+    if (!response.ok || data?.found !== true || !Array.isArray(data.rawRows) || !/^\d{14}$/.test(String(data.rceptNo ?? ""))) {
+      const errorMessage = payload?.error?.json?.message ?? data?.message;
+      return { record: null, errorMsg: errorMessage ?? `실시간 DART 원문을 확인하지 못했습니다: ${cleanName}. 실제 접수번호가 확인되지 않은 자료는 표시하지 않았습니다.` };
+    }
+
+    const rawRows = data.rawRows as RawDartRow[];
+    const parsedAccounts = parseDartFullStatementRows(rawRows, data.basisCode === "OFS" ? "OFS" : "CFS");
+    const totalsAreKnown = [parsedAccounts.자산총계, parsedAccounts.부채총계, parsedAccounts.자본총계].every(Number.isFinite);
+    const diff = totalsAreKnown ? Math.abs(parsedAccounts.자산총계 - (parsedAccounts.부채총계 + parsedAccounts.자본총계)) : Number.NaN;
+    const passed = totalsAreKnown && diff <= Math.max(0.01, Math.abs(parsedAccounts.자산총계) * 0.002);
+    const unavailable = Object.entries(parsedAccounts).filter(([, value]) => !Number.isFinite(value)).map(([name]) => name);
     return {
-      record: null,
-      errorMsg: "좌측 하단 [API 변경]을 눌러 실제 40자리 OpenDART API 인증키를 입력해 주세요.",
+      record: {
+        corpCode: String(data.corpCode ?? ""),
+        corpName: String(data.company ?? cleanName),
+        stockCode: String(data.stockCode ?? ""),
+        reportName: String(data.period ?? "DART 정기보고서"),
+        period: String(data.period ?? ""),
+        rceptNo: String(data.rceptNo),
+        basisCode: data.basisCode === "OFS" ? "OFS" : "CFS",
+        isLiveApiFetched: true,
+        verificationPassed: passed,
+        verificationNote: passed
+          ? `실시간 원문 회계항등식 점검 통과 · 차이 ${diff.toFixed(2)}억원`
+          : totalsAreKnown
+            ? `회계항등식 차이 ${diff.toFixed(2)}억원 · 수치 사용 전 원문 확인 필요`
+            : `회계항등식 구성 계정 미수집 · 자료 없음: ${unavailable.join(", ")}`,
+        accounts: parsedAccounts,
+        quarterlyHistory: Array.isArray(data.quarterlyHistory) ? data.quarterlyHistory : [],
+        rawRows,
+        serverMetrics: data.metrics && typeof data.metrics === "object" ? data.metrics as Record<string, ServerMetricValue | null> : undefined,
+        rawAccountMetrics: data.rawAccountMetrics && typeof data.rawAccountMetrics === "object" ? data.rawAccountMetrics as Record<string, ServerMetricValue | null> : undefined,
+      },
     };
+  } catch (error) {
+    return { record: null, errorMsg: error instanceof Error ? error.message : "OpenDART 실시간 조회에 실패했습니다." };
   }
+}
 
-  const entry = await findCorpEntryByName(corpNameInput, cleanKey);
-  if (!entry) {
+
+/** 분기 시계열은 기본 스냅샷과 분리해 조회합니다. 한 건의 API 요청이 장시간 멈춰 첫 화면의 핵심 지표까지 가리는 문제를 방지합니다. */
+export async function fetchLiveDartCompanyHistory(
+  corpNameInput: string,
+  apiKey: string,
+): Promise<{ quarterlyHistory: QuarterlyOnePagerItem[]; basisCode?: "CFS" | "OFS"; errorMsg?: string }> {
+  const cleanName = corpNameInput.trim();
+  if (!cleanName) return { quarterlyHistory: [], errorMsg: "기업명이 비어 있습니다." };
+  try {
+    const input = encodeURIComponent(JSON.stringify({ json: { company: cleanName } }));
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 40_000);
+    let response: Response;
+    try {
+      response = await fetch(apiUrl(`/api/trpc/dart.history?input=${input}`), {
+        method: "GET",
+        headers: { "X-OpenDART-Key": apiKey.trim() },
+        credentials: apiBaseUrl ? "omit" : "same-origin",
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+    const payload = await response.json().catch(() => ({}));
+    const data = unwrapTrpc(payload);
+    if (!response.ok || data?.found !== true || !Array.isArray(data.quarterlyHistory)) {
+      return {
+        quarterlyHistory: [],
+        errorMsg: payload?.error?.json?.message ?? data?.message ?? "DART 분기 시계열 조회에 실패했습니다.",
+      };
+    }
     return {
-      record: null,
-      errorMsg: `'${corpNameInput}' 기업을 찾을 수 없습니다. 정확한 기업명 또는 8자리 DART 고유번호를 입력해 주세요.`,
+      quarterlyHistory: data.quarterlyHistory as QuarterlyOnePagerItem[],
+      basisCode: data.basisCode === "OFS" ? "OFS" : "CFS",
+      errorMsg: data.quarterlyHistory.length ? undefined : data.message ?? "실제 분기 공시에서 매출·영업이익 계정을 확인하지 못했습니다.",
     };
+  } catch (error) {
+    const message = error instanceof DOMException && error.name === "AbortError"
+      ? "분기 공시 조회가 40초를 초과했습니다. 현재 서버의 OpenDART 응답 또는 공시 검색이 지연되고 있습니다. 재시도하거나 API 서버 로그를 확인하세요."
+      : error instanceof Error ? error.message : "DART 분기 시계열 조회에 실패했습니다.";
+    return { quarterlyHistory: [], errorMsg: message };
   }
-
-  const targetPeriods = [
-    { year: "2023", code: "11011", key: "2023", label: "2023.12 (연간)", title: "2023년 사업보고서" },
-    { year: "2024", code: "11011", key: "2024", label: "2024.12 (연간)", title: "2024년 사업보고서" },
-    { year: "2025", code: "11011", key: "2025", label: "2025.12 (연간)", title: "2025년 사업보고서" },
-    { year: "2026", code: "11013", key: "2026.1Q", label: "2026.03 (1분기)", title: "2026년 1분기보고서" },
-    { year: "2026", code: "11012", key: "2026.1H", label: "2026.06 (상반기)", title: "2026년 반기보고서" },
-  ];
-
-  const results = await Promise.all(
-    targetPeriods.map((p) =>
-      fetchSinglePeriodFromDart(entry.corpCode, p.year, p.code, p.key, p.label, p.title, cleanKey)
-    )
-  );
-
-  const errHit = results.find((r) => r.apiErr);
-  if (errHit && errHit.apiErr) {
-    return { record: null, errorMsg: errHit.apiErr };
-  }
-
-  const validSnaps = results
-    .map((r) => r.snap)
-    .filter((s): s is PeriodFinancialSnapshot => s !== null && (s.accounts.매출액 !== null || s.accounts.자산총계 !== null));
-
-  if (validSnaps.length === 0) {
-    return {
-      record: null,
-      errorMsg: `'${entry.corpName}'의 OpenDART 재무제표 응답을 받지 못했습니다. API 인증키와 네트워크를 확인해 주세요.`,
-    };
-  }
-
-  const latestSnap = validSnaps[validSnaps.length - 1];
-  const acc = latestSnap.accounts;
-  const hasBs = acc.자산총계 !== null && acc.부채총계 !== null && acc.자본총계 !== null;
-  const diff = hasBs ? Math.abs(acc.자산총계! - (acc.부채총계! + acc.자본총계!)) : 0;
-  const passed = hasBs ? diff <= Math.max(5, acc.자산총계! * 0.005) : true;
-
-  return {
-    record: {
-      corpCode: entry.corpCode,
-      corpName: entry.corpName,
-      stockCode: entry.stockCode || "-",
-      reportName: latestSnap.reportName,
-      period: latestSnap.periodLabel,
-      rceptNo: latestSnap.rceptNo,
-      fsDiv: latestSnap.fsDiv,
-      isLiveApiFetched: true,
-      verificationPassed: passed,
-      verificationNote: hasBs
-        ? `OpenDART 실시간 원문 검증 통과 (자산 ${acc.자산총계!.toLocaleString()}억 = 부채 ${acc.부채총계!.toLocaleString()}억 + 자본 ${acc.자본총계!.toLocaleString()}억)`
-        : "OpenDART 실시간 원문 수신 완료",
-      accounts: latestSnap.accounts,
-      history4Y: validSnaps,
-    },
-  };
 }

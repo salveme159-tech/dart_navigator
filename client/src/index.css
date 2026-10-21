@@ -557,36 +557,37 @@ button:focus-visible, input:focus-visible { outline: 2px solid #22c7a5; outline-
 .live-answer { margin-top: 13px; background: #fff; border: 1px solid #e2ebe8; border-radius: 13px; padding: 18px; box-shadow: 0 10px 24px rgba(24,61,67,.03); }
 .live-answer.loading, .live-answer.error { display: flex; align-items: center; gap: 10px; color: #708286; }
 .live-answer.error { color: #b17e3d; background: #fffaf1; border-color: #f0dfc4; }
-.live-answer.error strong { color: #7c6037; font-size: 10px; }
-.live-answer.error p { margin: 3px 0 0; color: #a08a67; font-size: 9px; line-height: 1.5; }
+.live-answer.error strong { color: #7c6037; font-size: 12px; }
+.live-answer.error p { margin: 3px 0 0; color: #8c7553; font-size: 11px; line-height: 1.6; }
 .live-answer-head { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
-.live-tag { display: inline-flex; align-items: center; gap: 4px; color: #378d79; background: #eaf8f3; padding: 4px 7px; border-radius: 20px; font-size: 8px; font-weight: 850; letter-spacing: .04em; }
+.live-tag { display: inline-flex; align-items: center; gap: 4px; color: #378d79; background: #eaf8f3; padding: 4px 7px; border-radius: 20px; font-size: 9px; font-weight: 850; letter-spacing: .04em; }
 .live-answer h3 { color: #234850; margin: 8px 0 4px; font-size: 24px; letter-spacing: -.06em; }
 .live-answer h3 em { color: #218c75; font-style: normal; }
-.live-answer-head p { margin: 0; color: #8e9da0; font-size: 9px; }
+.live-answer-head p { margin: 0; color: #72878a; font-size: 11px; }
 .live-icon { color: #5dad9c; background: #edf9f5; padding: 8px; box-sizing: content-box; border-radius: 11px; }
-.live-notice { margin-top: 10px; padding: 8px 10px; border-radius: 7px; background: #fff7e8; color: #a17b41; font-size: 9px; }
+.live-notice { margin-top: 10px; padding: 8px 10px; border-radius: 7px; background: #fff7e8; color: #8a6736; font-size: 11px; line-height: 1.55; }
 .live-lines { border-top: 1px solid #edf1ef; margin-top: 13px; padding-top: 10px; display: grid; gap: 6px; }
-.live-lines div { color: #587178; font-size: 10px; line-height: 1.5; display: flex; gap: 7px; }
+.live-lines div { color: #48666c; font-size: 12px; line-height: 1.6; display: flex; gap: 7px; }
 .live-lines span { color: #5baa97; font-weight: 900; }
 .live-series { margin-top: 13px; border: 1px solid #e7eeeb; border-radius: 9px; overflow: hidden; background: #fbfdfc; }
-.live-series table { width: 100%; border-collapse: collapse; font-size: 9px; }
-.live-series th { text-align: left; padding: 8px 10px; color: #7d9390; background: #f4f9f7; font-weight: 800; border-bottom: 1px solid #e7eeeb; }
-.live-series td { padding: 9px 10px; color: #536e74; border-bottom: 1px solid #edf2ef; vertical-align: middle; }
+.live-series { overflow-x: auto; }
+.live-series table { width: 100%; min-width: 460px; border-collapse: collapse; font-size: 11px; }
+.live-series th { text-align: left; padding: 9px 10px; color: #647d79; background: #f4f9f7; font-weight: 800; border-bottom: 1px solid #e7eeeb; }
+.live-series td { padding: 10px; color: #48666c; border-bottom: 1px solid #edf2ef; vertical-align: middle; }
 .live-series tr:last-child td { border-bottom: 0; }
-.live-series td small { display: block; margin-top: 2px; color: #9aa9a8; font-size: 8px; }
+.live-series td small { display: block; margin-top: 2px; color: #829594; font-size: 9px; }
 .live-series .series-value { color: #218c75; font-weight: 850; text-align: right; white-space: nowrap; }
 .live-series .series-ok { color: #3d927e; font-weight: 750; }
 .live-series .series-missing { color: #a18a68; }
 .live-formula { margin-top: 11px; border-radius: 8px; background: #f5faf8; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
-.live-formula div { display: flex; align-items: center; gap: 5px; color: #6f928a; font-size: 8px; font-weight: 850; }
-.live-formula strong { color: #45646a; font-size: 10px; line-height: 1.55; }
+.live-formula div { display: flex; align-items: center; gap: 5px; color: #53786f; font-size: 10px; font-weight: 850; }
+.live-formula strong { color: #385a60; font-size: 12px; line-height: 1.6; }
 .live-citation { margin-top: 11px; display: flex; align-items: center; gap: 8px; color: #86a09b; padding-top: 10px; border-top: 1px solid #edf1ef; }
 .live-citation > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.live-citation span { color: #7d9993; font-size: 8px; font-weight: 800; }
-.live-citation strong { color: #61797e; font-size: 9px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.live-citation a { color: #2f8e79; text-decoration: none; display: flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 800; }
-.live-disclaimer { margin-top: 8px; color: #9ba7a7; font-size: 8px; line-height: 1.5; }
+.live-citation span { color: #5f827a; font-size: 10px; font-weight: 800; }
+.live-citation strong { color: #4a686d; font-size: 11px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-citation a { color: #2f8e79; text-decoration: none; display: flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 800; }
+.live-disclaimer { margin-top: 8px; color: #728484; font-size: 10px; line-height: 1.55; }
 .natural-query-guide { margin-top: 11px; padding: 10px 11px; border: 1px solid rgba(169,226,215,.18); border-radius: 9px; background: rgba(255,255,255,.045); color: #9bbab6; display: grid; gap: 4px; font-size: 9px; line-height: 1.5; }
 .natural-query-guide strong { color: #d7f5ef; font-size: 9px; }
 .natural-query-guide b { color: #b8ded8; }
