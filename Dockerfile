@@ -5,6 +5,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
 RUN CI=1 pnpm install --frozen-lockfile
 COPY . .
+ENV VITE_BASE=/
 RUN pnpm build
 ENV NODE_ENV=production
 ENV PORT=3000

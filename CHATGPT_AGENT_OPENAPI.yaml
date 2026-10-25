@@ -6,7 +6,7 @@ info:
     Retrieve and calculate company financial figures from OpenDART disclosures.
     The server owns the OpenDART API key; this API requires a separate bearer secret.
 servers:
-  - url: https://YOUR-RENDER-SERVICE.onrender.com
+  - url: https://YOUR_API_DOMAIN.example.com
     description: Replace this placeholder with the public HTTPS address of your deployed Express API.
 security:
   - bearerAuth: []
