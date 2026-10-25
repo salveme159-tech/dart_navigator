@@ -1,0 +1,137 @@
+openapi: 3.1.0
+info:
+  title: Disclosure Navigator DART Agent API
+  version: 1.0.0
+  description: >-
+    Retrieve and calculate company financial figures from OpenDART disclosures.
+    The server owns the OpenDART API key; this API requires a separate bearer secret.
+servers:
+  - url: https://YOUR-RENDER-SERVICE.onrender.com
+    description: Replace this placeholder with the public HTTPS address of your deployed Express API.
+security:
+  - bearerAuth: []
+paths:
+  /api/agent/query:
+    post:
+      operationId: queryDisclosureNavigator
+      summary: Query DART financial disclosures in Korean natural language
+      description: >-
+        Parse a Korean question that identifies a company, financial metric, period,
+        consolidation basis, and requested comparison or trend. Do not invent a value
+        when the requested filing or account is missing. A successful HTTP response can
+        contain found=false when the data is unavailable or unsupported.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  minLength: 2
+                  maxLength: 300
+                  description: Korean-language natural-language financial question
+                  examples:
+                    - 대한전선 2026년 상반기 연결 기준 영업이익률
+                    - 대한전선 최근 4개년 상반기 매출액
+                    - 대한전선 2024~2026 매출과 영업이익 비교
+      responses:
+        '200':
+          description: Query completed. Check the found property before presenting any numbers.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AgentSuccess'
+                  - $ref: '#/components/schemas/AgentNotFound'
+        '400':
+          description: Invalid question
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNotFound'
+        '401':
+          description: Missing or invalid Agent API bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNotFound'
+        '502':
+          description: OpenDART or upstream request failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNotFound'
+        '503':
+          description: Agent API or server-side OpenDART credentials are not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: AGENT_API_KEY
+  schemas:
+    AgentNotFound:
+      type: object
+      required: [found, message]
+      properties:
+        found:
+          type: boolean
+          const: false
+        message:
+          type: string
+    AgentSuccess:
+      type: object
+      required: [found, company, period, basis, metric, headline]
+      properties:
+        found:
+          type: boolean
+          const: true
+        company:
+          type: string
+        period:
+          type: string
+        basis:
+          type: string
+          description: Consolidated (연결 기준) or separate (별도 기준)
+        notice:
+          type: [string, 'null']
+        metric:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        headline:
+          type: string
+        lines:
+          type: array
+          items:
+            type: string
+        formula:
+          type: [string, 'null']
+        citation:
+          type: string
+          description: DART receipt/source link as returned by the server
+        disclaimer:
+          type: [string, 'null']
+        series:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        matrix:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        query:
+          type: object
+          additionalProperties: true
+      additionalProperties: true

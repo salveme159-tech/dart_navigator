@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DISCLAIMER, fsDivFor, netDebt, normalizeQuestion, chunkByHeading, findRowLike, P, type Row } from "./dart/engine";
+import { DISCLAIMER, amountOf, fsDivFor, netDebt, normalizeQuestion, chunkByHeading, findRowLike, P, type Row } from "./dart/engine";
 import { pickDirectAccount, pickMetric } from "./dart/client";
 import { parseViewerDeepLinkHtml } from "./dart/viewerLink";
 
@@ -15,6 +15,16 @@ describe("DART-Copilot engine", () => {
     expect(r.ok && r.disclaimer).toBe(DISCLAIMER);
   });
 
+  it("순차입금에서는 유동성 금융기관차입금과 유동성장기부채를 분리해 인식한다", () => {
+    const result = netDebt([
+      bs("유동성 금융기관차입금", 100), bs("유동성장기부채", 40),
+      bs("장기차입금", 80), bs("사채", 50),
+      bs("현금및현금성자산", 10), bs("단기금융상품", 5),
+    ]);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.value).toBe(255);
+  });
+
   it("연결 기준 지표는 같은 이름의 별도 손익 계정보다 CIS를 우선한다", () => {
     const rows: Row[] = [
       { sj_div: "IS", account_nm: "매출액", thstrm_amount: "900000000000", thstrm_add_amount: "900000000000" },
@@ -25,6 +35,26 @@ describe("DART-Copilot engine", () => {
     expect(findRowLike(rows, ["CIS", "IS"], ["매출액"])?.sj_div).toBe("CIS");
     expect(pickMetric(rows, P(2026, "half"), "revenue")?.value).toBe(10000);
     expect(pickMetric(rows, P(2026, "half"), "operatingMargin")?.value).toBe(10);
+  });
+
+  it("매출 표준 계정코드와 대체 계정명으로 반기 매출액 및 영업이익률을 계산한다", () => {
+    const rows: Row[] = [
+      { sj_div: "CIS", account_nm: "수익", account_id: "ifrs-full_Revenue", thstrm_amount: "1198700000000", thstrm_add_amount: "2282028700000" },
+      { sj_div: "CIS", account_nm: "영업이익(손실)", account_id: "ifrs-full_ProfitLossFromOperatingActivities", thstrm_amount: "60000000000", thstrm_add_amount: "121250000000" },
+      { sj_div: "CIS", account_nm: "매출원가", thstrm_amount: "900000000000", thstrm_add_amount: "1700000000000" },
+      { sj_div: "CIS", account_nm: "매출채권", thstrm_amount: "100000000000", thstrm_add_amount: "120000000000" },
+    ];
+    expect(pickMetric(rows, P(2026, "half"), "revenue")?.value).toBeCloseTo(22820.287, 3);
+    expect(pickMetric(rows, P(2026, "half"), "operatingMargin")?.value).toBeCloseTo((1212.5 / 22820.287) * 100, 3);
+    expect(pickDirectAccount(rows, P(2026, "half"), "매출액")?.value).toBeCloseTo(22820.287, 3);
+  });
+
+  it("매출액 검색은 매출원가·매출채권 같은 유사 계정을 매출로 잘못 선택하지 않는다", () => {
+    const rows: Row[] = [
+      { sj_div: "CIS", account_nm: "매출원가", thstrm_amount: "90000000000" },
+      { sj_div: "CIS", account_nm: "매출채권", thstrm_amount: "10000000000" },
+    ];
+    expect(pickMetric(rows, P(2026, "half"), "revenue")).toBeNull();
   });
 
   it("EBITDA는 공시된 감가상각·무형자산상각 합계 계정을 영업이익에 더한다", () => {
@@ -61,7 +91,7 @@ describe("DART-Copilot engine", () => {
   });
 });
 
-import { amountOf, periodCandidates, looksLikeCompany } from "./dart/engine";
+import { periodCandidates, looksLikeCompany } from "./dart/engine";
 describe("기간·기본기업", () => {
   const now = new Date("2026-10-05");
   it("상반기 → 반기보고서(11012) 누적", () => {
@@ -477,6 +507,33 @@ describe("최근 화면 오류 회귀 테스트", () => {
   });
 
 
+  it("부채비율은 직접 공시된 비율 행 없이 부채총계와 자본총계로 계산한다", () => {
+    const result = pickMetric([bs("부채총계", 700), bs("자본총계", 300)], P(2026, "half"), "debtRatio");
+    expect(result?.value).toBeCloseTo(700 / 300 * 100, 6);
+    expect(result?.formula).toContain("부채총계");
+    expect(result?.formula).toContain("자본총계");
+    expect(result?.lines.join(" ")).toContain("분자 · 부채총계");
+    expect(result?.lines.join(" ")).toContain("분모 · 자본총계");
+  });
+
+  it("자산총계 계정명을 찾지 못해도 부채총계+자본총계로 차입금의존도 분모를 보완한다", () => {
+    const rows: Row[] = [bs("단기차입금", 100), bs("총부채", 700), bs("총자본", 300)];
+    const result = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
+    expect(result?.value).toBeCloseTo(10, 6);
+    expect(result?.lines.join(" ")).toContain("자산총계 대체 산식");
+    expect(result?.lines.join(" ")).toContain("부채총계 + 자본총계로 계산");
+  });
+
+  it("차입금의존도는 총차입성 부채 분자에 유동·비유동 리스부채를 포함한다", () => {
+    const rows: Row[] = [
+      bs("단기차입금", 100), bs("유동성장기부채", 50), bs("장기차입금", 75), bs("사채", 75),
+      bs("유동리스부채", 10), bs("비유동리스부채", 40), bs("자산합계", 1000),
+    ];
+    const result = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
+    expect(result?.value).toBeCloseTo(35, 6);
+    expect(result?.lines.join(" ")).toContain("리스부채 포함");
+  });
+
   it("총차입금 의존도는 공시 합계와 자산총계 분자·분모를 모두 표시한다", () => {
     const rows: Row[] = [bs("총차입금", 4133.4), bs("자산총계", 40091.2)];
     const result = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
@@ -509,6 +566,49 @@ describe("최근 화면 오류 회귀 테스트", () => {
     const result = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
     expect(result?.value).toBe(50);
     expect(result?.disclaimer).toContain("불일치");
+  });
+
+  it("DART 총차입금 합계가 리스 제외 구성 계정과 일치하면 유동·비유동 리스부채를 추가한다", () => {
+    const rows: Row[] = [
+      bs("총차입금", 400), bs("자산총계", 1000), bs("부채총계", 700), bs("자본총계", 300),
+      bs("단기차입금", 100), bs("유동성장기부채", 100), bs("장기차입금", 100), bs("사채", 100),
+      bs("유동리스부채", 10), bs("비유동리스부채", 40),
+    ];
+    const total = pickMetric(rows, P(2025, "annual"), "borrowings");
+    const ratio = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
+    expect(total?.value).toBe(450);
+    expect(ratio?.value).toBe(45);
+    expect(total?.lines?.join(" ")).toContain("유동·비유동 리스부채 추가");
+  });
+
+  it("유동성 금융기관차입금과 유동성장기부채를 별도 구성계정으로 각각 한 번씩 집계한다", () => {
+    const rows: Row[] = [
+      bs("총차입금", 11754.5), bs("자산총계", 40107.92),
+      bs("유동성 금융기관차입금(사채 제외)", 7621.1),
+      bs("유동성장기부채", 1900), bs("장기차입금", 2233.4),
+      bs("유동리스부채", 55.6), bs("비유동리스부채", 58),
+    ];
+    const total = pickMetric(rows, P(2026, "half"), "borrowings");
+    const ratio = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
+    expect(total?.value).toBeCloseTo(11868.1, 3);
+    expect(total?.lines?.join(" ")).toContain("유동성 금융기관차입금");
+    expect(total?.lines?.join(" ")).toContain("유동성장기부채");
+    expect(ratio?.value).toBeCloseTo(11868.1 / 40107.92 * 100, 4);
+  });
+
+  it("구성 계정 없이 차입금및사채와 유동·비유동 리스부채가 있으면 리스부채를 한 번 추가한다", () => {
+    const rows: Row[] = [
+      bs("차입금및사채", 11754.5), bs("자산총계", 40107.92),
+      bs("유동리스부채", 55.6), bs("비유동리스부채", 58),
+    ];
+    const total = pickMetric(rows, P(2026, "half"), "borrowings");
+    expect(total?.value).toBeCloseTo(11868.1, 3);
+    expect(total?.lines?.join(" ")).toContain("DART 원문 구성 리스부채 추가");
+  });
+
+  it("DART 금액 열의 대시는 명시적 0으로 읽고 빈 칸은 누락으로 유지한다", () => {
+    expect(amountOf({ sj_div: "BS", account_nm: "단기차입금", thstrm_amount: "-" })).toBe(0);
+    expect(amountOf({ sj_div: "BS", account_nm: "단기차입금", thstrm_amount: "" })).toBeNull();
   });
 
   it("전체 재무상태표에서 차입금·사채·리스부채를 합산해 차입금의존도를 계산한다", () => {

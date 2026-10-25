@@ -1101,105 +1101,42 @@ If 2025 comparative data is restated in a later report, the trend must identify 
 
 ---
 
-# 20. User OpenDART Credential Architecture
+# 20. OpenDART 자격증명 및 실시간 데이터 원칙
 
-## 20.1 Public deployment modes
+## 20.1 운영 원칙
 
-### Demo Snapshot
+- 재무 수치와 접수번호의 하드코딩 스냅샷을 운영 경로에서 사용하지 않는다.
+- 인증키 검증이 성공하면 공시검색 API와 재무제표 API를 사용해 실재 공시를 확인한 뒤 수치를 표시한다.
+- 공시검색 API에서 접수번호가 확인되지 않거나 원천 계정이 없으면 수치를 반환하지 않는다.
+- 연결 기준이 없으면 같은 보고기간의 별도 기준을 조회할 수 있으며 응답 기준을 명시한다.
+- 공용 DART 키를 사용자별 인증 대신 사용하지 않는다. GPT Action은 별도의 Bearer 비밀키로 보호한다.
 
-- no key required
-- fixed judged dataset
-- zero live OpenDART calls
-- immutable snapshot ID
+## 20.2 자격증명 처리
 
-### My Key / Live
+- 브라우저는 요청 헤더로 인증키를 전달하며 HTTPS만 사용한다.
+- 서버는 OpenDART 호출에 필요한 파라미터로 사용하되 요청 URL/로그에 키를 기록하지 않는다.
+- OpenDART 키는 GPT 지침, OpenAPI 스키마, Git 커밋에 넣지 않는다.
+- 실제 40자리 형식과 DART 응답을 검증하기 전에는 키를 유효한 것으로 취급하지 않는다.
 
-- user provides own OpenDART key
-- real-time OpenDART retrieval
-- user owns usage/quota responsibility
-- no application-wide shared credential
+## 20.3 검증 실패 및 공시 누락
 
-The public runtime must not have an `OPENDART_API_KEY` fallback that serves all users.
-
-## 20.2 Credential transport
-
-Browser → application server:
-
-- HTTPS only
-- credential in request header
-- never in browser URL
-
-Application server → OpenDART:
-
-- use OpenDART's required `crtfc_key` request parameter
-- sanitize outbound URL before logging
-
-## 20.3 Storage
-
-Default browser storage = `sessionStorage`.
-
-Persistent storage requires explicit user opt-in:
-
-`이 브라우저에 기억`
-
-Do not place the secret in the same object/key namespace as recent search history.
-
-## 20.4 Server handling
-
-Raw user credentials are request-scoped and must not be persisted in the product database.
-
-If a future account system is introduced, use an encrypted, user-scoped secret vault.
-
-## 20.5 Validation
-
-Before accepting a key:
-
-1. trim whitespace
-2. validate 40-character format
-3. perform a low-cost authenticated OpenDART request
-4. map the response code
-5. save only after successful validation
-
-## 20.6 Compromise response
-
-If a key is ever committed to Git or exposed publicly:
-
-1. revoke/deactivate it in OpenDART
-2. issue a new key
-3. rotate affected secrets
-4. inspect repository history
-
-Removing the latest `.env` file alone is insufficient.
+- 실패 시 과거 값, 테스트 수치, 임의 접수번호, 다른 기간 수치로 폴백하지 않는다.
+- 재무 계정/감가상각비/계산 구성요소가 빠지면 추정하지 않고 자료 없음 및 필요한 확인 항목을 반환한다.
 
 ---
 
-# 21. Demo Snapshot Architecture
+# 21. Evidence-locked DART processing
 
-## 21.1 Snapshot contents
+모든 결과는 다음 연결고리를 유지해야 한다.
 
-- company identity
-- filing metadata
-- normalized rows
-- calculation inputs
-- EvidenceRefs
-- formula version
-- mapping version
-- expected result
+1. 사용자가 지정한 회사/기간/기준
+2. DART 공식 기업 코드
+3. 공시검색 API로 확인한 실제 접수번호
+4. 같은 접수번호와 기간에 대응하는 실제 재무제표 계정 행
+5. 재현 가능한 산식/원천 계정
+6. 화면에 표시한 단위/값/근거 링크
 
-## 21.2 Snapshot identity
-
-Example:
-
-`demo.taihan.2026H1.net_debt.v2`
-
-## 21.3 Snapshot isolation
-
-A demo snapshot must never silently mix live OpenDART fields with cached demo values.
-
-Every result indicates:
-
-- `DEMO SNAPSHOT`
-- `LIVE OPENDART`
+누락된 링크가 있으면 값 생성 단계에서 중단한다. 실제 근거 없는 값에는 `LIVE OPENDART` 또는 `검증됨` 배지를 붙이지 않는다.
 
 ---
 

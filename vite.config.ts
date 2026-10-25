@@ -5,7 +5,8 @@ import path from "node:path";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: '/dart_navigator/',
+  // GitHub Pages는 /dart_navigator/ 하위 경로, 서버가 사이트까지 서비스하는 배포(Docker/Render)는 VITE_BASE=/ 로 빌드합니다.
+  base: process.env.VITE_BASE ?? '/dart_navigator/',
   plugins: [react(), tailwindcss(), jsxLocPlugin()],
   resolve: {
     alias: {

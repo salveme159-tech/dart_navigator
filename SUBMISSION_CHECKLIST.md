@@ -1,28 +1,41 @@
-# Disclosure Navigator - Submission Checklist
+# Disclosure Navigator - 제출 전 검증 체크리스트
 
-## Before 2026-10-30
+## 실제 DART 연결
+- [ ] 인증키가 DART 서버에서 즉시 검증되고 실패 키는 저장/사용되지 않는다.
+- [ ] 인증키 저장 직후 초기 기업은 실제 회사 코드, 최신 공시 접수번호, 실제 재무제표로 동기화된다.
+- [ ] 실제 공시가 없거나 API 실패면 `자료 없음`/오류를 표시하며, 과거 스냅샷이나 임의 접수번호로 대체하지 않는다.
+- [ ] 연결 재무제표가 없을 경우에만 같은 기간 별도 기준으로 폴백하고 실제 기준을 표시한다.
+- [ ] 공개 로그/응답/화면에 인증키가 노출되지 않는다.
 
-- [ ] Deploy the web application over HTTPS.
-- [ ] Confirm the landing page opens directly without login.
-- [ ] Confirm Demo Snapshot mode performs no OpenDART API call.
-- [ ] Confirm the exact demo prompts replay the intended fixture only.
-- [ ] Confirm an unrelated company question is refused in demo mode rather than returning a wrong fixture.
-- [ ] Confirm OpenDART key entry validates a real 40-character key.
-- [ ] Confirm live queries use the user's key and not a shared production fallback.
-- [ ] Confirm no key appears in browser screenshots, PDF, XLSX, errors, or application logs.
-- [ ] Confirm half-year revenue/profit uses DART cumulative fields.
-- [ ] Confirm EPS cumulative requests never silently fall back to 3-month values.
-- [ ] Confirm ROE/ROA interim labels state that the result is not annualized.
-- [ ] Confirm unsupported metrics do not expose an active `질의하기` action.
-- [ ] Confirm net debt requires a complete reconciled balance sheet before treating a missing debt group as zero.
-- [ ] Confirm net debt parent/detail bond rows are not double counted.
-- [ ] Confirm DART evidence links open the relevant financial-statement subdocument when available.
-- [ ] Confirm generated XLSX opens in Excel or LibreOffice and derived cells retain formulas and cached values.
-- [ ] Confirm three headline demo flows on a fresh browser profile.
-- [ ] Confirm `pnpm install --frozen-lockfile && pnpm check && pnpm test && pnpm build` succeeds in the deployment environment.
+## 수치 정확성
+- [ ] CAPEX×45% 등 감가상각비 추정이 없고 미공시 시 주석 확인 안내가 표시된다.
+- [ ] CAPEX는 실제 유형자산 취득 현금유출로부터 계산하고 FCF 산식의 부호가 맞다.
+- [ ] 총차입금/순차입금은 필요한 원천 계정이 빠지면 부분 합계를 결과로 노출하지 않는다.
+- [ ] 원문 모달은 선택 지표의 실제 계정 ID·금액·단위·보고 열을 표시한다.
+- [ ] 억원 표시가 소수점 첫째 자리까지 보존하고, 원문 금액도 보존한다.
+- [ ] 모든 값에 실제 기간·기준·14자리 접수번호·DART 링크가 확인된다.
 
-## Judge-facing story
+## 자연어와 계산
+- [ ] `영업이익`과 `영업이익률`, `순이익`과 `순이익률`을 구분한다.
+- [ ] 미등록 상장사를 질문·비교 검색에서 실시간 DART 회사목록으로 찾는다.
+- [ ] 최근 N개년·특정 연도·연도 범위·분기·반기·연간·전년 대비 질의를 테스트한다.
+- [ ] 하반기 값은 같은 회사·같은 CFS/OFS 기준의 연간 누계−상반기 누계로 계산한다.
+- [ ] 하반기 이익률은 하반기 이익을 하반기 매출로 나누어 다시 계산한다.
+- [ ] 기말 잔액/비가산 비율을 하반기 차감으로 산출하지 않는다.
 
-**Find -> Calculate -> Verify -> Prove -> Export**
+## 원인 검색/시각화
+- [ ] `왜 늘었어?`에 비교 수치와 사업보고서 원문 문장을 함께 제시한다.
+- [ ] 직접 원인 문장이 없으면 “공시로 특정되지 않음”이라고 표시하고 추측하지 않는다.
+- [ ] 원문 근거마다 실제 접수번호로 이동할 수 있다.
+- [ ] DART 뷰어 하위 문서 딥링크가 열리며, 추출 실패 시 폴백임을 분명히 알린다.
+- [ ] 1-Pager 3단 차트는 선택된 기업의 실데이터를 사용하며, 별도·연결 동시 데이터가 있을 때만 차이를 분해한다.
+- [ ] 비교 기간을 통일하고 기간이 없는 기업을 연간값으로 조용히 대체하지 않는다.
 
-The differentiator is deterministic financial analysis with evidence lineage and correct refusal behavior, not generic chat quality.
+## 자동 검증
+- [ ] `pnpm install`
+- [ ] `pnpm check`
+- [ ] `pnpm test`
+- [ ] `pnpm dev` 및 브라우저 대표 시나리오
+- [ ] 실제 OpenDART 키를 이용한 숫자/원문 대조
+
+**원칙:** 코드가 존재하거나 구문 검사가 통과했다는 사실을 실제 공시 수치 검증 완료로 간주하지 않는다.

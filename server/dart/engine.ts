@@ -141,14 +141,54 @@ const N = (s?: string) => (s ?? "").replace(/[\s·ㆍ]/g, "");
 const AMT = ["thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount"] as const;
 
 export function amountOf(r: Row, idx = 0, cum = false): number | null {
-  const v = ((cum && idx === 0 && r.thstrm_add_amount ? r.thstrm_add_amount : r[AMT[idx]]) ?? "").replace(/,/g, "").trim();
-  const n = Number(v);
-  return v === "" || Number.isNaN(n) ? null : n / 1e8;
+  const raw = ((cum && idx === 0 && r.thstrm_add_amount ? r.thstrm_add_amount : r[AMT[idx]]) ?? "").replace(/,/g, "").trim();
+  if (!raw) return null;
+  // DART 원문에서 명시적으로 0을 뜻하는 대시와 괄호 음수를 표준화합니다.
+  if (/^(?:-|—|–|－|−)$/.test(raw)) return 0;
+  const negativeParentheses = /^\(.*\)$/.test(raw);
+  const n = Number(negativeParentheses ? `-${raw.slice(1, -1)}` : raw);
+  return Number.isFinite(n) ? n / 1e8 : null;
 }
 
 export const findRow = (rows: Row[], sj: string[], names: string[]) => {
   const target = names.map(N);
   return rows.find((r) => sj.includes(r.sj_div ?? "") && target.includes(N(r.account_nm)) && !N(r.account_nm).includes("리스"));
+};
+
+/**
+ * 매출은 회사·연도에 따라 계정명이 "매출액", "영업수익", "수익(매출액)" 또는
+ * IFRS 표준계정코드로 반환될 수 있습니다. 재무제표 API의 account_id를 우선
+ * 활용하되, 매출원가·매출채권·기타수익을 매출로 오인하지 않습니다.
+ */
+export const findRevenueRow = (rows: Row[], sj: string[] = ["CIS", "IS"]) => {
+  const normalize = (value?: string) => N(value).replace(/[()（）,，:：]/g, "").toLowerCase();
+  const exactNames = [
+    "매출액", "수익(매출액)", "영업수익", "매출", "매출(수익)", "수익",
+    "고객과의계약에서생기는수익", "고객과의계약에서생기는수익(매출액)", "고객과의계약에서발생하는수익",
+  ].map(normalize);
+  const idPattern = /^(?:ifrs-full_Revenue|dart_OperatingRevenue|ifrs-full_RevenueFromContractsWithCustomers|ifrs-full_RevenueFromContractsWithCustomersIncludingAmountsCollectedOnBehalfOfThirdParties)$/i;
+  const exclude = /매출채권|매출원가|매출총이익|매출할인|매출에누리|매출환입|기타수익|금융수익|지분법수익|영업외수익|법인세수익/;
+  const candidates = rows.flatMap((row) => {
+    if (!sj.includes(row.sj_div ?? "")) return [];
+    const rawName = N(row.account_nm);
+    const name = normalize(row.account_nm);
+    const accountId = String(row.account_id ?? "");
+    if (exclude.test(rawName)) return [];
+    const idMatch = idPattern.test(accountId);
+    const exactIndex = exactNames.indexOf(name);
+    const prefixMatch = ["매출액", "수익매출액", "영업수익", "매출수익", "고객과의계약에서생기는수익", "고객과의계약에서발생하는수익"].some((alias) => name.startsWith(normalize(alias)));
+    if (!idMatch && exactIndex < 0 && !prefixMatch) return [];
+    // 값이 있는 행을 우선하고, 표준 계정코드/정확한 계정명/접두어 순으로 선택합니다.
+    const raw = row.thstrm_add_amount || row.thstrm_amount || "";
+    const hasAmount = raw.trim() !== "";
+    const rank = idMatch ? 0 : exactIndex >= 0 ? 1 + exactIndex : 20;
+    return [{ row, score: (hasAmount ? 0 : 100) + rank }];
+  });
+  candidates.sort((a, b) => {
+    const statementRank = (row: Row) => sj.indexOf(row.sj_div ?? "");
+    return a.score - b.score || statementRank(a.row) - statementRank(b.row) || N(a.row.account_nm).length - N(b.row.account_nm).length;
+  });
+  return candidates[0]?.row;
 };
 
 export const findRowLike = (rows: Row[], sj: string[], names: string[]) => {
@@ -179,8 +219,8 @@ export const findRowLike = (rows: Row[], sj: string[], names: string[]) => {
 
 type Groups = [string, string[]][];
 const DEBT: Groups = [
-  ["단기차입금", ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기차입금및사채", "유동차입금"]],
-  ["유동성장기부채", ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성차입부채", "유동성금융기관차입금", "유동성차입금", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채", "비유동차입금의유동성대체부분"]],
+  ["단기차입금", ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기차입금및사채", "유동차입금", "유동성금융기관차입금"]],
+  ["유동성장기부채", ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성차입부채", "유동성차입금", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채", "비유동차입금의유동성대체부분"]],
   ["장기차입금", ["장기차입금", "장기차입부채", "장기금융기관차입금", "비유동차입금", "비유동차입부채"]],
   ["사채", ["사채", "회사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"]],
 ];
@@ -200,7 +240,7 @@ export type Item = { group: string; account: string; amount: number; sign: "+" |
 function findDebtRow(rows: Row[], names: string[], group: string, idx = 0): Row | undefined {
   const aliases = names.map(N);
   const accountIds: Record<string, RegExp> = {
-    "단기차입금": /ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent/i,
+    "단기차입금": /ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings/i,
     "유동성장기부채": /CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongTermBorrowings|CurrentPortionOfLongtermLoans|CurrentPortionOfLongTermLoans|CurrentPortionOfLongtermDebt|CurrentPortionOfLongTermDebt|CurrentPortionOfLongtermLiabilities|CurrentPortionOfLongTermLiabilities|CurrentMaturitiesOfLongtermBorrowings|CurrentMaturitiesOfLongTermBorrowings/i,
     "장기차입금": /LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|LongtermDebtNoncurrent|BorrowingsNoncurrent|NoncurrentBorrowings|NoncurrentLoansAndBorrowings/i,
     "사채": /BondsIssued|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i,
@@ -416,7 +456,7 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
   const yearStart = range ? Number(range[1]) : null;
   const yearEnd = range ? Number(range[2]) : null;
   const recent = q.match(/(?<!\d)(\d{1,2})\s*(?:개년치|개년|년치|년|연도)/);
-  const recentYears = recent ? Math.max(2, Math.min(10, Number(recent[1]))) : null;
+  const recentYears = recent ? Math.max(2, Math.min(12, Number(recent[1]))) : null;
 
   let kind: ParsedDartQuery["kind"] = null;
   let mode: "cum" | "qtr" | null = null;
@@ -547,7 +587,7 @@ export const METRIC_LABELS: Record<FinancialMetric, string> = {
 };
 
 export const metricConfig: Record<FinancialMetric, { sj: string[]; names: string[] }> = {
-  revenue: { sj: ["CIS", "IS"], names: ["매출액", "수익(매출액)", "영업수익", "매출"] },
+  revenue: { sj: ["CIS", "IS"], names: ["매출액", "수익(매출액)", "영업수익", "매출", "수익", "고객과의계약에서생기는수익", "고객과의계약에서발생하는수익"] },
   operatingProfit: { sj: ["CIS", "IS"], names: ["영업이익", "영업이익(손실)"] },
   netIncome: { sj: ["CIS", "IS"], names: ["반기순손익", "분기순손익", "당기순손익", "반기순이익", "분기순이익", "당기순이익", "당기순이익(손실)", "반기순이익(손실)", "분기순이익(손실)", "연결당기순이익", "연결당기순이익(손실)", "지배기업의소유주에게귀속되는당기순이익", "지배기업소유주지분당기순이익"] },
   operatingMargin: { sj: ["CIS", "IS"], names: [] },

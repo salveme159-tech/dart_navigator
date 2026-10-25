@@ -1,27 +1,28 @@
-# Validation Report — 증거 수준 명시
+# Validation Report — 증거 및 실행 상태
 
-## 이번 문서 감사에서 확인
-- 압축 파일을 해제하고 `package.json`, `server/routers.ts`, `server/dart/engine.ts`, `client/src/pages/Home.tsx`, `client/src/lib/xlsxExport.ts`를 직접 읽었습니다.
-- 소스 트리에 TS/TSX 파일 **81개**, `*.test.ts` 파일 **1개**가 있습니다. 파일 수는 테스트 통과 건수가 아닙니다.
-- tRPC 라우터 선언과 pnpm 실행 스크립트의 존재를 확인했습니다.
+작성일: 2026-10-17
 
-## 이전 보고서의 검증 주장 (이번에 재실행하지 않음)
-원본 `VALIDATION_REPORT.md`는 TS 구문 변환, 특정 엔진 검사, XLSX 수식·캐시값 점검을 주장합니다. 해당 결과를 이 문서에서 재실행 검증한 것으로 취급하지 않습니다.
+## 이번 변경에서 실행한 검증
+- TypeScript/TSX 소스 218개 구문 변환 검사: 0 syntax diagnostics.
+- 자연어 질의 8개 대표 케이스 실행: 기간, 추이, 비교, 원인, 영업이익률, 투자현금흐름, 차입금의존도 해석 통과.
+- 실제 계정 행으로 순차입금 완전성 가드 테스트: 모든 필수 계정이 있으면 계산, 하나라도 누락되면 실패.
+- 정적 검사에서 실행 코드에서 스냅샷 상수, 임의 접수번호, CAPEX 비율 추정, 억원 정수 강제 반올림을 찾지 못함(문서의 변경 설명 문구는 제외).
 
-## 미검증 — 제출 전 필수
-- `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm test`, `pnpm build` 전부 통과
-- 실제 브라우저 첫 접속·체험 5개 시나리오·거부 시나리오·실시간 첫 응답 렌더링
-- DART 원문과 대한전선 2026 반기 매출·영업이익·순차입금·ROE 일치
-- 3개월/누적, 연결/별도, 누락계정 0 처리, 정정공시, 회사명 모호성
-- XLSX 모든 파생지표 수식 존재, 외부 계산 엔진으로 재계산, PDF 한글
-- 키가 네트워크 로그·서버 로그·오류·PDF·XLSX에 노출되지 않음
-- 배포된 HTTPS 서비스, 실제 OpenDART 인증키로 호출 성공
+## 이번 실행 환경에서 실행하지 못한 검증
+- 전체 `pnpm check`, 전체 Vitest, 프로덕션 Vite 빌드.
+- 실 OpenDART 인증키를 사용한 실제 조회와 원문 숫자 대조.
+- DART 문서 뷰어의 실시간 `dcmNo`/`eleId` 딥링크와 문서 API의 사업보고서 원인 문장 추출 실검증.
 
-## 검증 기록 양식
-| 항목 | 환경/명령 | 기대 결과 | 실제 결과 | 증거 | 판정 |
-|---|---|---|---|---|---|
-| 타입검사 | `pnpm check` | exit 0 | 미실행 | 없음 | NOT RUN |
-| 테스트 | `pnpm test` | exit 0 | 미실행 | 없음 | NOT RUN |
-| 빌드 | `pnpm build` | exit 0 | 미실행 | 없음 | NOT RUN |
+## 사용자의 이전 로컬 로그에 대해 수정한 원인
+`tsconfig.json`의 `baseUrl: "."`가 `vite`, `sonner`, `input-otp` 패키지 이름을 프로젝트 루트의 동명 TS 파일과 충돌시키고 잘못된 `vite.config` 경로를 해석하도록 한 문제를 제거했다. 추가로 nullable `gpm` 표시, `pickMetric` 타입 추론, 자연어 엔진 문자열 길이 정렬 오류를 수정했다.
 
-**판정 기준:** 코드가 존재한다는 사실과 실행 성공을 혼동하지 않습니다.
+## 제출 전 필수 명령
+```bat
+pnpm install
+pnpm check
+pnpm test
+pnpm dev
+```
+실제 OpenDART 인증키로 실행한 뒤 대표 질의의 기간·CFS/OFS 기준·접수번호·숫자를 원문과 대조해야 검증 완료로 판단한다.
+
+세부 변경사항은 [NATURAL_LANGUAGE_REPAIR_REPORT.md](NATURAL_LANGUAGE_REPAIR_REPORT.md)를 참조한다.
