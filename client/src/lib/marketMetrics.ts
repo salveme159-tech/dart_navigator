@@ -1,6 +1,6 @@
 import { QuarterlyFinancialPoint } from "./financialVerification";
 
-export interface YahooQuotePayload {
+export interface MarketQuotePayload {
   symbol: string;
   currentPrice: number;
   marketCapWon: number;
@@ -9,7 +9,7 @@ export interface YahooQuotePayload {
   fiftyTwoWeekHigh?: number;
   fiftyTwoWeekLow?: number;
   fetchedAt: string;
-  source: "YAHOO_FINANCE_LIVE" | "FALLBACK_CACHE";
+  source: "NAVER_FINANCE_LIVE" | "FALLBACK_CACHE";
 }
 
 export interface ComputedValuationMetrics {
@@ -32,7 +32,7 @@ export interface ComputedValuationMetrics {
 
 export function computeFullMetrics(
   quarters: QuarterlyFinancialPoint[],
-  quote?: YahooQuotePayload | null
+  quote?: MarketQuotePayload | null
 ): ComputedValuationMetrics {
   const actuals = quarters.filter((q) => !q.isEstimate);
   const latest = actuals[actuals.length - 1];

@@ -1,19 +1,10 @@
 import React, { useState } from "react";
+import { QuarterlyFinancialPoint } from "../lib/financialVerification";
 import {
-  QuarterlyFinancialPoint,
-  runDeterministicVerification,
-} from "../lib/financialVerification";
-import {
-  YahooQuotePayload,
+  MarketQuotePayload,
   computeFullMetrics,
 } from "../lib/marketMetrics";
-import {
-  ShieldCheck,
-  AlertTriangle,
-  Printer,
-  ExternalLink,
-  SearchCheck,
-} from "lucide-react";
+import { AlertTriangle, Printer } from "lucide-react";
 
 export interface DisclosureRedFlag {
   rceptNo: string;
@@ -35,14 +26,25 @@ export interface ExecutiveOnePagerProps {
   stockCode?: string;
   marketCls?: "Y" | "K" | "N";
   quarters?: QuarterlyFinancialPoint[];
-  quote?: YahooQuotePayload | null;
+  quote?: MarketQuotePayload | null;
   redFlags?: DisclosureRedFlag[];
   customBullets?: FactLockedBullet[];
-  /** 실제 DART viewer.do 본문 링크를 만드는 상위 컴포넌트 콜백. 커버(main.do) 직링크는 사용하지 않습니다. */
-  onOpenSource?: (term: string, rceptNo: string, basis: "CFS" | "OFS") => void;
 }
 
 export const DEFAULT_REFERENCE_QUARTERS: QuarterlyFinancialPoint[] = [];
+
+function makeNiceAxis(maxValue: number, divisions = 4) {
+  const safeMax = Math.max(0, Number.isFinite(maxValue) ? maxValue : 0);
+  const roughStep = safeMax > 0 ? safeMax / divisions : 1;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const normalized = roughStep / magnitude;
+  const niceUnit = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  const step = niceUnit * magnitude;
+  const axisMax = step * divisions;
+  return { max: axisMax, ticks: Array.from({ length: divisions + 1 }, (_, index) => step * index) };
+}
+
+const formatEok = (value: number) => value.toLocaleString("ko-KR", { maximumFractionDigits: 1 });
 
 export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
   corpName = "DART 조회 대기",
@@ -52,12 +54,8 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
   quote = null,
   redFlags = [],
   customBullets,
-  onOpenSource,
 }) => {
   const [hoveredPoint, setHoveredPoint] = useState<QuarterlyFinancialPoint | null>(null);
-  const [showVerificationModal, setShowVerificationModal] = useState(false);
-
-  const verification = runDeterministicVerification(quarters);
   const metrics = computeFullMetrics(quarters, quote);
   if (quarters.length === 0) {
     return <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">실제 DART 분기 공시자료가 없어 1-Pager를 생성하지 않았습니다. API 인증과 공시 조회를 먼저 완료하세요.</div>;
@@ -76,7 +74,7 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
 
   const dynamicHeadline = hasSubsidiaryBoost
     ? `분기 실적 — 이익률은 ${metrics.operatingMarginPct}%로 올랐고, 그 위쪽 몫(+${latest.subsidiaryAndAdjProfit}억)은 자회사에서 왔다`
-    : `분기 실적 — 최근 분기 매출 ${latest?.revenue.toLocaleString()}억·영업이익률 ${metrics.operatingMarginPct}% 기록 (DART 원문 검증 완료)`;
+    : `분기 실적 — 최근 분기 매출 ${latest?.revenue.toLocaleString()}억·영업이익률 ${metrics.operatingMarginPct}% 기록 (공시 계정 기준)`;
 
   const bullets: FactLockedBullet[] = customBullets ?? [];
 
@@ -86,8 +84,12 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
   const plotWidth = chartWidth - leftPad - rightPad;
   const colWidth = plotWidth / quarters.length;
 
-  const maxRev = Math.max(...quarters.map((q) => q.revenue), 2000);
-  const maxOp = Math.max(...quarters.map((q) => q.operatingProfit), 350);
+  // QuarterlyFinancialPoint의 금액은 서버에서 이미 억원 단위로 환산됩니다.
+  // 축 눈금도 실측 범위에 맞춰 자동 계산해 값과 축이 서로 다른 스케일을 쓰지 않게 합니다.
+  const revenueAxis = makeNiceAxis(Math.max(...quarters.map((q) => q.revenue), 0));
+  const operatingAxis = makeNiceAxis(Math.max(...quarters.map((q) => q.operatingProfit), 0));
+  const maxRev = revenueAxis.max;
+  const maxOp = operatingAxis.max;
   const firstEstimateIdx = quarters.findIndex((q) => q.isEstimate);
   const getX = (idx: number) => leftPad + idx * colWidth + colWidth / 2;
 
@@ -95,16 +97,7 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
     <div className="bg-[#faf9f5] text-stone-900 border border-stone-300 rounded-lg shadow-sm p-6 md:p-8 max-w-5xl mx-auto font-sans print:shadow-none print:border-none print:p-2">
       <div className="flex flex-wrap items-center justify-between gap-3 pb-4 mb-4 border-b border-stone-300 print:hidden">
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-900 text-emerald-50">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            DART 원문 교차검증 {verification.scorePct}% Pass ({verification.checks.length}개 규칙)
-          </span>
-          <button
-            onClick={() => setShowVerificationModal(!showVerificationModal)}
-            className="text-xs font-medium text-stone-700 underline hover:text-stone-950"
-          >
-            {showVerificationModal ? "검증 상세 닫기" : "수치 검산 로그 열기"}
-          </button>
+          <span className="text-xs font-semibold text-stone-600">실제 공시 기반 요약</span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -121,65 +114,9 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
         </div>
       </div>
 
-      {showVerificationModal && (
-        <div className="mb-5 p-4 bg-white border border-emerald-300 rounded-md text-xs space-y-2 print:hidden">
-          <div className="font-bold text-stone-900 flex items-center gap-1.5">
-            <SearchCheck className="w-4 h-4 text-emerald-700" />
-            결정론적(Deterministic) 재무 정합성 검산 결과 — 할루시네이션 개입 0%
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {verification.checks.map((chk) => (
-              <div
-                key={chk.id}
-                className="p-2.5 rounded border border-stone-200 bg-stone-50 flex flex-col gap-1"
-              >
-                <div className="flex items-center justify-between font-semibold">
-                  <span>{chk.label}</span>
-                  <span className={chk.passed ? "text-emerald-700" : "text-amber-700"}>
-                    {chk.passed ? "✓ PASS" : "⚠ 확인필요"}
-                  </span>
-                </div>
-                <div className="text-stone-600">산식: {chk.formula}</div>
-                <div className="text-stone-800">{chk.note}</div>
-                {chk.rceptNo && (
-                  onOpenSource ? (
-                    <button type="button" onClick={() => onOpenSource(chk.label, chk.rceptNo!, "CFS")} className="text-blue-700 hover:underline inline-flex items-center gap-1 mt-0.5">
-                      DART 재무제표 본문 열기 (#{chk.rceptNo}) <ExternalLink className="w-3 h-3" />
-                    </button>
-                  ) : <span className="text-stone-500">DART 접수번호 #{chk.rceptNo} · 본문 링크를 사용할 수 없음</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="border-t-2 border-b border-stone-800 py-2 text-[11px] leading-relaxed text-stone-700">
-        <div className="grid grid-cols-12 gap-2 border-b border-stone-300 pb-1.5 mb-1.5">
-          <div className="col-span-1 font-bold text-stone-900">보완</div>
-          <div className="col-span-5">
-            2024년 분기별 본체(별도) 미보완 구간은 주석으로 임의 메우지 않고 연결만 표시함
-          </div>
-          <div className="col-span-6">
-            분기 체인은 1Q24부터 추적, 4Q는 연간(사업보고서)-9개월(3분기보고서) 차감치(조건부 검증)
-          </div>
-        </div>
-        <div className="text-stone-600 flex flex-wrap items-center justify-between gap-2">
-          <span>
-            첨부 재무 기초자료 · DART 공시 API(접수번호는 각주 및 X-Ray 툴팁 기록) ·{" "}
-            <strong className="text-stone-900">
-              '기간 순이익/평균자본'은 연율을 곱하여 연간 ROE로 쓰지 않음
-            </strong>
-          </span>
-          <span className="font-mono text-[10px] text-stone-500">
-            대상: {corpName} ({stockCode})
-          </span>
-        </div>
-      </div>
-
       <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 my-3 bg-white border border-stone-200 rounded p-2.5 text-xs">
         <div>
-          <div className="text-[10px] text-stone-500">시가총액 (Yahoo)</div>
+          <div className="text-[10px] text-stone-500">시가총액</div>
           <div className="font-bold text-stone-900">
             {metrics.marketCapEok ? `${metrics.marketCapEok.toLocaleString()}억` : "비상장/미연동"}
           </div>
@@ -237,9 +174,9 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
                 ? "(연간 - 9M 차감)"
                 : "(DART 분기 공시)"}
             </div>
-            <div>• 연결 매출액: {hoveredPoint.revenue.toLocaleString()}억원</div>
+            <div>• 연결 매출액: {formatEok(hoveredPoint.revenue)}억원</div>
             <div>
-              • 연결 영업이익: {hoveredPoint.operatingProfit.toLocaleString()}억원 (OPM{" "}
+              • 연결 영업이익: {formatEok(hoveredPoint.operatingProfit)}억원 (OPM{" "}
               {((hoveredPoint.operatingProfit / hoveredPoint.revenue) * 100).toFixed(1)}%)
             </div>
             {typeof hoveredPoint.separateOperatingProfit === "number" && (
@@ -378,15 +315,15 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
           })}
 
           <text x={leftPad} y={190} fontSize="11" fontWeight="bold" fill="#44403c">
-            매출(억)
+            매출액 (억원)
           </text>
-          {[0, 1000, 2000].map((val) => {
+          {revenueAxis.ticks.map((val) => {
             const y = 335 - (val / maxRev) * 125;
             return (
               <g key={`rev-grid-${val}`}>
                 <line x1={leftPad} y1={y} x2={chartWidth - rightPad} y2={y} stroke="#e7e5e4" strokeWidth="1" />
                 <text x={leftPad - 8} y={y + 4} fontSize="10" textAnchor="end" fill="#78716c">
-                  {val.toLocaleString()}
+                  {formatEok(val)}
                 </text>
               </g>
             );
@@ -409,22 +346,22 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
                   strokeWidth="0.8"
                 />
                 <text x={x} y={y - 5} fontSize="9.5" fontWeight="600" textAnchor="middle" fill="#292524">
-                  {q.revenue.toLocaleString()}
+                  {formatEok(q.revenue)}
                 </text>
               </g>
             );
           })}
 
           <text x={leftPad} y={360} fontSize="11" fontWeight="bold" fill="#44403c">
-            영업이익(억)
+            영업이익 (억원)
           </text>
-          {[0, 100, 200, 300].map((val) => {
+          {operatingAxis.ticks.map((val) => {
             const y = 505 - (val / maxOp) * 125;
             return (
-              <g key={`op-grid-${val}`}>
+              <g key={`op-grid-${formatEok(val)}`}>
                 <line x1={leftPad} y1={y} x2={chartWidth - rightPad} y2={y} stroke="#e7e5e4" strokeWidth="1" />
                 <text x={leftPad - 8} y={y + 4} fontSize="10" textAnchor="end" fill="#78716c">
-                  {val}
+                  {formatEok(val)}
                 </text>
               </g>
             );
@@ -476,7 +413,7 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
                   textAnchor="middle"
                   fill="#1c1917"
                 >
-                  {q.operatingProfit}
+                  {formatEok(q.operatingProfit)}
                 </text>
 
                 {hasDecomp && subOp !== 0 && (
@@ -528,7 +465,7 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
         <p className="text-[11px] text-stone-600 mt-2 leading-relaxed">
           분기 매출·영업이익과 이익률(연결), 아래 막대는 본체(별도) 영업이익과 그 위의 자회사·연결조정 몫.
           2024년은 별도 분기치를 보완하지 않아 연결만 표시했다. *4Q24·4Q25는 연간-9개월 차감치(조건부).
-          3Q26E~4Q26E는 증권사 컨센서스 평균. (출처: DART 전자공시시스템, Yahoo Finance)
+          3Q26E~4Q26E는 증권사 컨센서스 평균. (재무 공시 출처: DART 전자공시시스템)
         </p>
       </div>
 
@@ -537,11 +474,6 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
           <div key={idx} className="pl-2 border-l-2 border-stone-800">
             <div>
               <strong className="font-bold text-stone-950">• {b.tag}</strong> — {b.mainFact}
-              {b.rceptNo && (onOpenSource ? (
-                <button type="button" onClick={() => onOpenSource(b.tag, b.rceptNo!, "CFS")} className="ml-1.5 text-[10px] text-stone-500 hover:text-stone-900 underline print:no-underline">
-                  [DART 재무제표 본문 #{b.rceptNo}]
-                </button>
-              ) : <span className="ml-1.5 text-[10px] text-stone-500">[DART #{b.rceptNo} · 본문 이동 미설정]</span>)}
             </div>
             {b.subNote && (
               <div className="pl-3 mt-0.5 text-stone-600 text-[12px]">
@@ -563,10 +495,7 @@ export const ExecutiveOnePager: React.FC<ExecutiveOnePagerProps> = ({
               <li key={rf.rceptNo} className="flex items-center justify-between">
                 <span>
                   <strong className="text-amber-900">[{rf.category}]</strong> {rf.reportNm} ({rf.rceptDt})
-                </span>
-                {onOpenSource ? (
-                  <button type="button" onClick={() => onOpenSource("재무상태표", rf.rceptNo, "CFS")} className="text-blue-700 hover:underline text-[11px]">DART 본문 확인 ↗</button>
-                ) : <span className="text-stone-500 text-[11px]">접수번호 #{rf.rceptNo}</span>}
+                </span> <span className="text-stone-500 text-[11px]">DART 접수번호 #{rf.rceptNo}</span>
               </li>
             ))}
           </ul>

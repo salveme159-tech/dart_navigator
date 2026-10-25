@@ -59,6 +59,32 @@ export interface RawDartRow {
   unit?: string;
 }
 
+export interface CrossValidationProviderValue {
+  source: "NAVER_FINANCE";
+  sourceLabel: string;
+  url: string | null;
+  found: boolean;
+  value: number | null;
+  unit: string;
+  period: string | null;
+  basis: "CFS" | "OFS" | "UNKNOWN";
+  status: "MATCH" | "MISMATCH" | "UNAVAILABLE" | "NOT_COMPARABLE";
+  differencePct: number | null;
+  message: string;
+}
+export interface MetricCrossValidationValue {
+  metric: string;
+  metricLabel: string;
+  status: "MATCH" | "MISMATCH" | "PARTIAL" | "UNAVAILABLE" | "NOT_COMPARABLE";
+  dartValue: number | null;
+  unit: string;
+  period: string;
+  basis: "CFS" | "OFS";
+  tolerancePct: number;
+  providers: CrossValidationProviderValue[];
+  checkedAt: string;
+  message: string;
+}
 export interface ServerMetricValue {
   value: number | null;
   unit: string;
@@ -67,6 +93,7 @@ export interface ServerMetricValue {
   available?: boolean;
   lines?: string[];
   disclaimer?: string | null;
+  crossValidation?: MetricCrossValidationValue;
 }
 
 export interface CompanyFinancialRecord {
@@ -87,6 +114,8 @@ export interface CompanyFinancialRecord {
   serverMetrics?: Record<string, ServerMetricValue | null>;
   /** 카드용 기본 계정값. 동일한 DART 재무제표에서 행 이름·계정코드를 확인해 서버에서 추출합니다. */
   rawAccountMetrics?: Record<string, ServerMetricValue | null>;
+  crossValidation?: Partial<Record<string, MetricCrossValidationValue>>;
+  validationSummary?: { checked: number; matched: number; mismatched: number; partial: number; unverified: number; message: string };
 }
 
 // 초기 화면에 표시할 회사 이름만 둡니다. 기업코드·접수번호·재무 수치는 반드시 DART API에서 가져옵니다.
@@ -111,7 +140,8 @@ export const EMPTY_DART_RECORD: CompanyFinancialRecord = {
 function parseAmountToEok(raw: unknown): number {
   if (raw === undefined || raw === null) return Number.NaN;
   const cleaned = String(raw).replace(/,/g, "").trim();
-  if (!cleaned || cleaned === "-" || cleaned === "—") return Number.NaN;
+  if (!cleaned) return Number.NaN;
+  if (/^(?:-|—|–|－|−)$/.test(cleaned)) return 0;
   const negativeParentheses = /^\(.*\)$/.test(cleaned);
   const numericText = negativeParentheses ? `-${cleaned.slice(1, -1)}` : cleaned;
   const num = Number(numericText);
@@ -210,22 +240,42 @@ export async function searchLiveDartCompanies(query: string, apiKey: string, lim
   return data.filter((row: any) => row && typeof row.name === "string" && typeof row.code === "string") as DartCompanySearchResult[];
 }
 
-export async function validateDartApiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
+export type DartKeyValidation = {
+  valid: boolean;
+  message: string;
+  /** invalid: DART가 키를 거부 / format: 형식 오류 / no-server: 조회 서버 주소 없음 / network: 서버 응답 없음 */
+  reason?: "invalid" | "format" | "no-server" | "network";
+};
+
+export async function validateDartApiKey(apiKey: string): Promise<DartKeyValidation> {
   const normalized = apiKey.trim();
   if (!/^[A-Za-z0-9]{40}$/.test(normalized)) {
-    return { valid: false, message: "OpenDART 인증키는 영문·숫자 40자리여야 합니다." };
+    return { valid: false, reason: "format", message: "OpenDART 인증키는 영문·숫자 40자리여야 합니다." };
   }
   if (/^(DEMO|VERIFIED)/i.test(normalized)) {
-    return { valid: false, message: "데모용 문구는 실제 DART 인증키가 아닙니다. 발급받은 키를 입력하세요." };
+    return { valid: false, reason: "format", message: "데모용 문구는 실제 DART 인증키가 아닙니다. 발급받은 키를 입력하세요." };
+  }
+  // GitHub Pages는 정적 호스팅이라 /api/trpc 서버가 없습니다. API 서버 주소가 빌드에 주입되지 않았다면 키 문제가 아니라 서버 미연결입니다.
+  if (typeof window !== "undefined" && !apiBaseUrl && /\.github\.io$/i.test(window.location.hostname)) {
+    return {
+      valid: false,
+      reason: "no-server",
+      message: "인증키 문제가 아니라, 이 사이트(GitHub Pages)에 DART 조회 서버가 연결되어 있지 않습니다. API 서버를 따로 배포하고 VITE_API_BASE_URL을 설정해 다시 배포해야 합니다. (DEPLOY_BACKEND_KO.md 참고)",
+    };
   }
   try {
     const { response, data, payload } = await readTrpc("dart.validateKey", normalized) as any;
-    if (!response.ok || data?.valid !== true) {
-      return { valid: false, message: data?.message ?? payload?.error?.json?.message ?? payload?.error?.message ?? "DART 인증키 검증에 실패했습니다. 키와 서버 API 연결을 확인하세요." };
+    if (data?.valid === true && response.ok) {
+      return { valid: true, message: `DART 인증 성공 · 기업 ${Number(data.companyCount ?? 0).toLocaleString("ko-KR")}개 인덱스 확인` };
     }
-    return { valid: true, message: `DART 인증 성공 · 기업 ${Number(data.companyCount ?? 0).toLocaleString("ko-KR")}개 인덱스 확인` };
+    // 서버가 키를 명시적으로 거부한 경우에만 '키 오류'로 봅니다. JSON이 없거나 404/5xx이면 서버 연결 문제입니다.
+    if (data && typeof data === "object" && data.valid === false) {
+      return { valid: false, reason: "invalid", message: data.message ?? "DART 인증키 검증에 실패했습니다. 키를 확인하세요." };
+    }
+    const serverMessage = payload?.error?.json?.message ?? payload?.error?.message;
+    return { valid: false, reason: "network", message: `DART 조회 서버가 정상 응답하지 않았습니다(HTTP ${response.status}). ${serverMessage ?? "서버 주소·CORS 설정과 서버 실행 상태를 확인하세요."}` };
   } catch {
-    return { valid: false, message: "DART API 서버에 연결하지 못했습니다. GitHub Pages만으로는 조회할 수 없으므로 Express API 서버가 필요합니다." };
+    return { valid: false, reason: "network", message: "DART 조회 서버에 연결하지 못했습니다. 서버 주소(VITE_API_BASE_URL), 서버 실행 상태, CORS_ALLOWED_ORIGINS 설정을 확인하세요." };
   }
 }
 
@@ -280,6 +330,8 @@ export async function fetchLiveDartCompanyRecord(
         rawRows,
         serverMetrics: data.metrics && typeof data.metrics === "object" ? data.metrics as Record<string, ServerMetricValue | null> : undefined,
         rawAccountMetrics: data.rawAccountMetrics && typeof data.rawAccountMetrics === "object" ? data.rawAccountMetrics as Record<string, ServerMetricValue | null> : undefined,
+        crossValidation: data.crossValidation && typeof data.crossValidation === "object" ? data.crossValidation as Partial<Record<string, MetricCrossValidationValue>> : undefined,
+        validationSummary: data.validationSummary && typeof data.validationSummary === "object" ? data.validationSummary : undefined,
       },
     };
   } catch (error) {

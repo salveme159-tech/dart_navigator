@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { apiUrl } from "@/lib/apiBase";
+import { apiBaseUrl, apiUrl } from "@/lib/apiBase";
 import LiveDartPanel from "@/components/LiveDartPanel";
 import AdvancedAnalysisPanel from "@/components/AdvancedAnalysisPanel";
 import {
@@ -307,6 +307,44 @@ export function formatMetricValue(val: number, unit: MetricDefinition["unit"]): 
 }
 
 
+function userFacingDartError(value: unknown, fallback = "DART 조회에 실패했습니다."): string {
+  const raw = value instanceof Error ? value.message : typeof value === "string" ? value : "";
+  if (/failed to fetch|networkerror|fetch failed|load failed/i.test(raw)) {
+    return "DART 조회 서버에 연결하지 못했습니다. 서버 실행 상태와 OpenDART 인증키를 확인한 뒤 다시 시도하세요.";
+  }
+  if (/네이버 금융|FnGuide|Yahoo Finance|교차검증|수치 대조/i.test(raw)) {
+    return "공시 원문에서 필요한 계정 정보를 모두 확인하지 못했습니다. 확인되지 않은 수치는 임의로 보정하지 않았습니다.";
+  }
+  const cleaned = raw
+    .replace(/CFS\s*\(연결\)\s*공시가 없으면\s*OFS\s*\(별도\)를\s*확인합니다\.?/gi, "")
+    .replace(/조회 실패와 실제 미공시를 구분(?:하며|합니다)[,，。]?/g, "")
+    .replace(/실제 수치가 확보되지 않은 구간은 만들어 채우지 않습니다\.?/g, "")
+    .trim();
+  return cleaned || fallback;
+}
+
+
+function makeDartRegisteredPlaceholder(item: { name: string; code: string; stock: string }): CompanyFinancialRecord {
+  return {
+    ...EMPTY_DART_RECORD,
+    corpCode: item.code,
+    corpName: item.name,
+    stockCode: item.stock || "비상장",
+    reportName: "DART 등록 기업 · 재무자료 미확보",
+    period: "재무제표 조회 대기",
+    rceptNo: "",
+    isLiveApiFetched: false,
+    verificationPassed: false,
+    verificationNote: "DART 기업코드는 확인됐습니다. 조회 가능한 정기 재무제표가 없거나 현재 기간 데이터가 제공되지 않았습니다.",
+    accounts: { ...EMPTY_DART_RECORD.accounts },
+    quarterlyHistory: [],
+    rawRows: [],
+    serverMetrics: {},
+    rawAccountMetrics: {},
+  };
+}
+
+
 export default function Home() {
   // 무로그인 API 입력 게이트 상태
   const [apiKey, setApiKey] = useState<string>(() => {
@@ -328,9 +366,12 @@ export default function Home() {
       const validation = await validateDartApiKey(apiKey);
       if (cancelled) return;
       if (!validation.valid) {
-        localStorage.removeItem("DART_API_KEY_V6");
+        // 키가 실제로 거부된 경우에만 저장된 키를 지웁니다. 서버 미연결·일시 오류에서는 키를 보존하고 사유를 화면에 표시합니다.
+        if (validation.reason === "invalid" || validation.reason === "format") {
+          localStorage.removeItem("DART_API_KEY_V6");
+          setApiInputDraft("");
+        }
         setApiKey("");
-        setApiInputDraft("");
         setIsApiGateOpen(true);
         setIsRefreshingApi(false);
         setApiStatusMessage(validation.message);
@@ -338,29 +379,40 @@ export default function Home() {
       }
       const loaded: CompanyFinancialRecord[] = [];
       const failures: string[] = [];
+      const savedListRaw = localStorage.getItem("DART_REGISTERED_COMPANIES_V1");
       let savedNames: string[] = [];
       try {
-        const parsed = JSON.parse(localStorage.getItem("DART_REGISTERED_COMPANIES_V1") || "[]");
+        const parsed = savedListRaw === null ? [] : JSON.parse(savedListRaw);
         if (Array.isArray(parsed)) savedNames = parsed.filter((x) => typeof x === "string");
       } catch { savedNames = []; }
-      // 이전 버전에서 자동 등록됐던 예시 기업은 사용자 등록 목록에서 제외합니다.
-      const removedSeedNames = new Set(["가온전선", "삼성전자", "LS", "LS전선"]);
-      savedNames = savedNames.filter((name) => !removedSeedNames.has(name.trim()));
-      const initialNames = [...new Set([...INITIAL_DART_COMPANIES, ...savedNames])];
-      // 최대 3개 동시 조회: 한 회사씩 대기하지 않으면서 DART 과호출도 제한합니다.
+      // 기존 버전에서 자동 등록된 예시 종목은 제거합니다. 저장 목록이 존재하면 사용자가 삭제한 종목을 다시 추가하지 않습니다.
+      if (localStorage.getItem("DART_SEED_CLEANUP_V2") !== "done") {
+        const removedSeedNames = new Set(["가온전선", "삼성전자", "LS", "LS전선"]);
+        savedNames = savedNames.filter((name) => !removedSeedNames.has(name.trim()));
+        localStorage.setItem("DART_SEED_CLEANUP_V2", "done");
+      }
+      const initialNames = [...new Set(savedListRaw === null ? [...INITIAL_DART_COMPANIES] : savedNames)];
+      // 상장 종목만 표시합니다. 비상장 기업은 재무 조회용 등록 목록에서 제외합니다.
       let cursor = 0;
       await Promise.all(Array.from({ length: Math.min(3, initialNames.length) }, async () => {
         while (cursor < initialNames.length) {
           const name = initialNames[cursor++];
           if (cancelled) return;
           const result = await fetchLiveDartCompanyRecord(name, apiKey);
-          if (result.record) loaded.push(result.record);
-          else failures.push(`${name}: ${result.errorMsg ?? "공시 미확인"}`);
+          if (result.record) {
+            if (/^\d{6}$/.test(String(result.record.stockCode ?? "")) && result.record.stockCode !== "000000") loaded.push(result.record);
+            continue;
+          }
+          const matches = (await searchLiveDartCompanies(name, apiKey, 20).catch(() => [])).filter((item) => /^\d{6}$/.test(String(item.stock ?? "")) && item.stock !== "000000");
+          const normalized = (value: string) => value.replace(/[\s㈜()주식회사]/g, "").toLowerCase();
+          const registered = matches.find((item) => normalized(item.name) === normalized(name)) ?? matches.find((item) => normalized(item.name).includes(normalized(name)) || normalized(name).includes(normalized(item.name)));
+          if (registered) loaded.push(makeDartRegisteredPlaceholder(registered));
+          else failures.push(`${name}: ${result.errorMsg ?? "DART 기업코드 미확인"}`);
         }
       }));
       if (cancelled) return;
       setCompanies(loaded);
-      localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify(initialNames));
+      localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify(loaded.map((company) => company.corpName)));
       if (loaded.length) {
         setSelectedCorpName(loaded[0].corpName);
         setSelectedBasis(loaded[0].basisCode === "OFS" ? "OFS" : "CFS");
@@ -370,12 +422,14 @@ export default function Home() {
       }
       setIsRefreshingApi(false);
       setApiStatusMessage(loaded.length
-        ? `실시간 DART 조회 완료: ${loaded.length}/${initialNames.length}개 기업. ${failures.length ? `미조회: ${failures.join(" / ")}` : "모든 기본 기업의 실제 접수번호와 재무제표를 확인했습니다."}`
-        : `인증키는 유효하지만 기본 기업의 실제 공시 조회에 실패했습니다. 임의 수치를 표시하지 않았습니다. ${failures.join(" / ")}`);
+        ? `실시간 DART 조회 완료: ${loaded.length}/${initialNames.length}개 상장 종목. ${failures.length ? `미조회: ${failures.join(" / ")}` : "실제 공시 조회를 완료했습니다."}`
+        : initialNames.length
+          ? `등록된 상장 종목의 공시 조회에 실패했습니다. 임의 수치를 표시하지 않았습니다. ${failures.join(" / ")}`
+          : "등록된 종목이 없습니다. 종목 현황에서 ‘타 기업 추가’를 눌러 등록하세요.");
     })().catch((err) => {
       if (!cancelled) {
         setIsRefreshingApi(false);
-        setApiStatusMessage(err instanceof Error ? err.message : "DART 실시간 조회에 실패했습니다.");
+        setApiStatusMessage(userFacingDartError(err, "DART 실시간 조회에 실패했습니다."));
       }
     });
     return () => { cancelled = true; };
@@ -389,9 +443,24 @@ export default function Home() {
   const [companySearchSuggestions, setCompanySearchSuggestions] = useState<Array<{name:string;code:string;stock:string}>>([]);
   const [compareCompanySuggestions, setCompareCompanySuggestions] = useState<Array<{name:string;code:string;stock:string}>>([]);
   const [filingAlerts, setFilingAlerts] = useState<Array<{company:string;reportName:string;receiptDate:string;rceptNo:string;url:string}>>([]);
+  const [currentCompanyFilings, setCurrentCompanyFilings] = useState<Array<{company:string;reportName:string;receiptDate:string;rceptNo:string;url:string}>>([]);
+  const [isLoadingCurrentFilings, setIsLoadingCurrentFilings] = useState<boolean>(false);
+  const [currentFilingsMessage, setCurrentFilingsMessage] = useState<string>("최근 공시 현황을 불러올 준비가 되었습니다.");
+  const [companyFilingsRefreshNonce, setCompanyFilingsRefreshNonce] = useState<number>(0);
   const [showFilingAlertPopup, setShowFilingAlertPopup] = useState<boolean>(false);
   const [lastAlertCheck, setLastAlertCheck] = useState<string>("");
+  const [alertStatus, setAlertStatus] = useState<string>("관심기업을 추가하면 신규 공시 확인을 시작합니다.");
+  const [alertCompanyNames, setAlertCompanyNames] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try { const saved = JSON.parse(localStorage.getItem("DART_ALERT_WATCHLIST_V1") || "[]"); return Array.isArray(saved) ? saved.filter((x) => typeof x === "string") : []; } catch { return []; }
+  });
+  const [alertCompanyChoice, setAlertCompanyChoice] = useState<string>("");
+  const [alertViewCompanyName, setAlertViewCompanyName] = useState<string>("");
+  const [alertCompanySearch, setAlertCompanySearch] = useState<string>("");
+  const [alertCompanySuggestions, setAlertCompanySuggestions] = useState<Array<{name:string;code:string;stock:string}>>([]);
   const [alertCheckNonce, setAlertCheckNonce] = useState<number>(0);
+  const [askCompanySearch, setAskCompanySearch] = useState<string>("");
+  const [askCompanySuggestions, setAskCompanySuggestions] = useState<Array<{name:string;code:string;stock:string}>>([]);
 
   const [companies, setCompanies] = useState<CompanyFinancialRecord[]>([]);
   const [selectedCorpName, setSelectedCorpName] = useState<string>("대한전선");
@@ -406,7 +475,6 @@ export default function Home() {
   // 첫 화면: 커스텀 지표 (추가 및 삭제 완벽 작동)
   const [customMetricIds, setCustomMetricIds] = useState<string[]>([
     "차입금",
-    "EBITDA",
     "운전자본",
     "매입채무",
     "차입금의존도",
@@ -445,12 +513,70 @@ export default function Home() {
     () => companies.find((c) => c.corpName === selectedCorpName) || companies[0] || EMPTY_DART_RECORD,
     [companies, selectedCorpName]
   );
+  const alertDisplayCompany = useMemo(
+    () => companies.find((c) => c.corpName === alertViewCompanyName) || currentCompany,
+    [companies, alertViewCompanyName, currentCompany]
+  );
+  // 공시 알람의 공시 현황은 종목 현황 탭의 선택과 독립적으로 기업을 바꿔 조회할 수 있습니다.
+  useEffect(() => {
+    if (!apiKey || isApiGateOpen || !alertDisplayCompany.corpCode || alertDisplayCompany.corpName === "DART 조회 대기") {
+      setCurrentCompanyFilings([]);
+      setCurrentFilingsMessage(!apiKey ? "API 인증키를 등록하면 최근 공시 현황이 표시됩니다." : "종목 정보를 불러오는 중입니다.");
+      return;
+    }
+    let cancelled = false;
+    const toDateKey = (date: Date) => `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+    const fromDate = new Date();
+    fromDate.setMonth(fromDate.getMonth() - 6);
+    const query = encodeURIComponent(JSON.stringify({ json: { companies: [alertDisplayCompany.corpName], fromDate: toDateKey(fromDate) } }));
+    setIsLoadingCurrentFilings(true);
+    setCurrentFilingsMessage("DART 공시목록을 조회하고 있습니다…");
+    fetch(apiUrl(`/api/trpc/dart.recentFilings?input=${query}`), {
+      headers: { "X-OpenDART-Key": apiKey },
+      credentials: apiBaseUrl ? "omit" : "same-origin",
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        const data = payload?.result?.data?.json ?? payload?.result?.data;
+        if (!response.ok || !data || !Array.isArray(data.rows)) throw new Error("조회 응답 없음");
+        return data as { rows: Array<{company:string;reportName:string;receiptDate:string;rceptNo:string;url:string}>; warnings?: string[] };
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const rows = data.rows.filter((row) => /^\d{14}$/.test(row.rceptNo || "") && Boolean(row.reportName) && Boolean(row.receiptDate))
+          .sort((a, b) => b.receiptDate.localeCompare(a.receiptDate) || b.rceptNo.localeCompare(a.rceptNo));
+        setCurrentCompanyFilings(rows.slice(0, 30));
+        if (rows.length) setCurrentFilingsMessage(`최근 6개월 · 최신순 ${rows.length}건 확인`);
+        else if (data.warnings?.length) setCurrentFilingsMessage("공시목록을 확인하지 못했습니다. API 인증키와 네트워크를 확인해 주세요.");
+        else setCurrentFilingsMessage("최근 6개월간 확인된 공시가 없습니다.");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCurrentCompanyFilings([]);
+          setCurrentFilingsMessage("공시목록 조회에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+        }
+      })
+      .finally(() => { if (!cancelled) setIsLoadingCurrentFilings(false); });
+    return () => { cancelled = true; };
+  }, [apiKey, isApiGateOpen, alertDisplayCompany.corpName, alertDisplayCompany.corpCode, companyFilingsRefreshNonce]);
+
+  const handleRemoveRegisteredCompany = (corpName: string) => {
+    const remaining = companies.filter((company) => company.corpName !== corpName);
+    setCompanies(remaining);
+    localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify(remaining.map((company) => company.corpName)));
+    setCompareCorpNames((prev) => prev.filter((name) => name !== corpName));
+    setAlertCompanyNames((prev) => prev.filter((name) => name !== corpName));
+    setAlertViewCompanyName((prev) => prev === corpName ? (remaining[0]?.corpName ?? "") : prev);
+    setSelectedCorpName((prev) => prev === corpName ? (remaining[0]?.corpName ?? "") : prev);
+    setAskCorpName((prev) => prev === corpName ? (remaining[0]?.corpName ?? "") : prev);
+    setAskQuery((prev) => prev.includes(corpName) ? `${remaining[0]?.corpName ?? ""} 영업이익률`.trim() : prev);
+  };
 
   useEffect(() => {
     if (!apiKey || newCorpQuery.trim().length < 1) { setCompanySearchSuggestions([]); return; }
     let cancelled = false;
     const timer = window.setTimeout(async () => {
-      const rows = await searchLiveDartCompanies(newCorpQuery, apiKey, 8).catch(() => []);
+      const rows = (await searchLiveDartCompanies(newCorpQuery, apiKey, 8).catch(() => [])).filter((item) => /^\d{6}$/.test(String(item.stock ?? "")) && item.stock !== "000000");
       if (!cancelled) setCompanySearchSuggestions(rows);
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timer); };
@@ -460,22 +586,47 @@ export default function Home() {
     if (!apiKey || compareSearchInput.trim().length < 1) { setCompareCompanySuggestions([]); return; }
     let cancelled = false;
     const timer = window.setTimeout(async () => {
-      const rows = await searchLiveDartCompanies(compareSearchInput, apiKey, 8).catch(() => []);
+      const rows = (await searchLiveDartCompanies(compareSearchInput, apiKey, 8).catch(() => [])).filter((item) => /^\d{6}$/.test(String(item.stock ?? "")) && item.stock !== "000000");
       if (!cancelled) setCompareCompanySuggestions(rows);
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [compareSearchInput, apiKey]);
 
-  // 첫 실행은 현재 시점의 공시 목록을 기준선으로 저장하고, 이후 5분마다 신규 접수번호만 알립니다.
   useEffect(() => {
-    if (!apiKey || !companies.length) return;
+    if (!apiKey || alertCompanySearch.trim().length < 1) { setAlertCompanySuggestions([]); return; }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const rows = (await searchLiveDartCompanies(alertCompanySearch, apiKey, 10).catch(() => []))
+        .filter((item) => /^\d{6}$/.test(String(item.stock ?? "")) && item.stock !== "000000");
+      if (!cancelled) setAlertCompanySuggestions(rows);
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [alertCompanySearch, apiKey]);
+
+  useEffect(() => {
+    if (!apiKey || askCompanySearch.trim().length < 1) { setAskCompanySuggestions([]); return; }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const rows = (await searchLiveDartCompanies(askCompanySearch, apiKey, 10).catch(() => [])).filter((item) => /^\d{6}$/.test(String(item.stock ?? "")) && item.stock !== "000000");
+      if (!cancelled) setAskCompanySuggestions(rows);
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [askCompanySearch, apiKey]);
+
+  useEffect(() => {
+    localStorage.setItem("DART_ALERT_WATCHLIST_V1", JSON.stringify([...new Set(alertCompanyNames)]));
+  }, [alertCompanyNames]);
+
+  // 관심기업만 조회합니다. 성공/실패 상태를 화면에 기록하고, 새 접수번호가 있으면 팝업과 브라우저 알림을 표시합니다.
+  useEffect(() => {
+    if (!apiKey || !alertCompanyNames.length) { setAlertStatus("관심기업을 추가하면 신규 공시 확인을 시작합니다."); return; }
     let cancelled = false;
     const todayKey = () => {
       const d = new Date();
       return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}`;
     };
     const check = async (baseline = false) => {
-      const names = [...new Set(companies.map((c) => c.corpName))];
+      const names = [...new Set(alertCompanyNames)];
       const now = Date.now();
       const previousCheck = Number(localStorage.getItem("DART_ALERT_LAST_CHECK_MS") || 0);
       const fromDate = previousCheck ? new Date(previousCheck - 6 * 60 * 60 * 1000) : todayKey();
@@ -485,26 +636,36 @@ export default function Home() {
         const response = await fetch(apiUrl(`/api/trpc/dart.recentFilings?input=${input}`), { headers: { "X-OpenDART-Key": apiKey }, credentials: apiBaseUrl ? "omit" : "same-origin" });
         const payload = await response.json().catch(() => ({}));
         const data = payload?.result?.data?.json ?? payload?.result?.data;
-        if (!response.ok || !Array.isArray(data) || cancelled) return;
+        const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : null;
+        if (!response.ok || !rows) {
+          const detail = payload?.error?.json?.message ?? payload?.error?.message ?? `HTTP ${response.status}`;
+          if (!cancelled) setAlertStatus(`공시 조회 실패: ${detail}`);
+          return;
+        }
+        if (cancelled) return;
         const seen = new Set<string>(JSON.parse(localStorage.getItem("DART_ALERT_SEEN_RCEPTS_V1") || "[]"));
-        const newRows = data.filter((row: any) => row && typeof row.rceptNo === "string" && !seen.has(row.rceptNo));
-        data.forEach((row: any) => { if (row?.rceptNo) seen.add(row.rceptNo); });
-        localStorage.setItem("DART_ALERT_SEEN_RCEPTS_V1", JSON.stringify([...seen].slice(-1000)));
+        const newRows = rows.filter((row: any) => row && typeof row.rceptNo === "string" && !seen.has(row.rceptNo));
+        rows.forEach((row: any) => { if (row?.rceptNo) seen.add(row.rceptNo); });
+        localStorage.setItem("DART_ALERT_SEEN_RCEPTS_V1", JSON.stringify([...seen].slice(-2000)));
         localStorage.setItem("DART_ALERT_LAST_CHECK_MS", String(now));
         setLastAlertCheck(new Date(now).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }));
+        const warningText = Array.isArray(data?.warnings) && data.warnings.length ? ` · 일부 조회 실패 ${data.warnings.length}건: ${data.warnings.slice(0, 2).join(" / ")}` : "";
+        setAlertStatus(`${new Date(now).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 조회 성공 · 관심기업 ${names.length}개 · 공시 ${rows.length}건${newRows.length ? ` · 신규 ${newRows.length}건` : " · 신규 공시 없음"}${warningText}`);
         if (!baseline && newRows.length) {
-          setFilingAlerts((prev) => [...newRows, ...prev].slice(0, 30));
+          setFilingAlerts((prev) => [...newRows, ...prev].filter((row, index, all) => all.findIndex((candidate) => candidate.rceptNo === row.rceptNo) === index).slice(0, 50));
           setShowFilingAlertPopup(true);
           if ("Notification" in window && Notification.permission === "granted") {
             new Notification("DART 신규 공시", { body: newRows.slice(0, 3).map((r: any) => `${r.company}: ${r.reportName}`).join("\n") });
           }
         }
-      } catch { /* 일시적 조회 실패는 다음 주기에서 재시도합니다. */ }
+      } catch (error) {
+        if (!cancelled) setAlertStatus(userFacingDartError(error, "공시 조회 중 오류가 발생했습니다."));
+      }
     };
     void check(!Number(localStorage.getItem("DART_ALERT_LAST_CHECK_MS") || 0));
     const timer = window.setInterval(() => void check(false), 5 * 60 * 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [apiKey, companies.map((c) => c.corpName).join("|"), alertCheckNonce]);
+  }, [apiKey, alertCompanyNames.join("|"), alertCheckNonce]);
 
   // 요약 보고서의 숫자는 서버가 실제 DART 원천 계정으로 계산한 값만 사용합니다.
   // 로컬 편의용 계정 파싱값으로 서버 계산 결과를 덮어쓰지 않습니다.
@@ -527,10 +688,21 @@ export default function Home() {
   };
   // 같은 화면의 비율은 서버에서 별도 산출한 퍼센트와 섞지 않습니다.
   // 매출액·이익은 동일한 최신 공시 스냅샷에서 가져오고, 헤드라인·카드·해설이 같은 계산식을 사용합니다.
+  const metricSourceTag = (metricKey: string): string => {
+    const citation = currentCompany.serverMetrics?.[metricKey]?.citation ?? currentCompany.rawAccountMetrics?.[metricKey]?.citation ?? "";
+    if (/FnGuide/i.test(citation)) return "FNGUIDE";
+    if (/네이버 금융/.test(citation)) return "NAVER_FINANCE";
+    return currentCompany.isLiveApiFetched ? `DART:${currentCompany.rceptNo}:${currentCompany.basisCode ?? "CFS"}` : "UNKNOWN";
+  };
   const officialMetricValueForDisplay = (metricKey: string): number => {
+    const directValue = currentCompany.serverMetrics?.[metricKey]?.value;
+    if (typeof directValue === "number" && Number.isFinite(directValue)) return directValue;
     if (metricKey === "operatingMargin" || metricKey === "netMargin") {
       const revenue = officialMetricValue("revenue");
-      const profit = officialMetricValue(metricKey === "operatingMargin" ? "operatingProfit" : "netIncome");
+      const profitKey = metricKey === "operatingMargin" ? "operatingProfit" : "netIncome";
+      const profit = officialMetricValue(profitKey);
+      // DART 값과 외부 보조값을 섞어 만든 비율은 표시하지 않습니다.
+      if (metricSourceTag("revenue") !== metricSourceTag(profitKey)) return Number.NaN;
       return Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(profit) ? (profit / revenue) * 100 : Number.NaN;
     }
     return officialMetricValue(metricKey);
@@ -791,7 +963,7 @@ export default function Home() {
       if (!cancelled) {
         setLiveCompareResults({});
         setIsRefreshingCompare(false);
-        setLiveCompareStatus(error instanceof Error ? error.message : "실시간 비교 조회에 실패했습니다.");
+        setLiveCompareStatus(userFacingDartError(error, "실시간 비교 조회에 실패했습니다."));
       }
     });
     return () => { cancelled = true; };
@@ -799,19 +971,32 @@ export default function Home() {
 
   useEffect(() => {
     const attemptKey = `${currentCompany.corpName}:${apiKey.slice(-6)}`;
-    if (activeTab !== "ONE_PAGER" || !apiKey || currentCompany.quarterlyHistory?.length || historyLoadAttemptedFor === attemptKey) return;
+    const historyPoints = currentCompany.quarterlyHistory ?? [];
+    // 기존 저장/스냅샷에 1분기까지의 이력이 남아 있어도 그것만으로 갱신을 생략하지 않습니다.
+    // 현재 날짜 기준 실제 제출기한이 지난 가장 최근 분기(10월에는 2Q)를 포함하는지 확인합니다.
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const expectedPeriod = month >= 11
+      ? `3Q${String(now.getFullYear()).slice(-2)}`
+      : month >= 8
+        ? `2Q${String(now.getFullYear()).slice(-2)}`
+        : month >= 5
+          ? `1Q${String(now.getFullYear()).slice(-2)}`
+          : `4Q${String(now.getFullYear() - 1).slice(-2)}`;
+    const hasLatestPublishedQuarter = historyPoints.some((point) => point.period === expectedPeriod);
+    if ((activeTab !== "ONE_PAGER" && activeTab !== "ADVANCED") || !apiKey || hasLatestPublishedQuarter || historyLoadAttemptedFor === attemptKey) return;
     let cancelled = false;
     setHistoryLoadAttemptedFor(attemptKey);
     setIsLoadingHistory(true);
-    setHistoryLoadMessage(`${currentCompany.corpName}의 2024년 이후 실제 분기 공시를 조회하고 있습니다…`);
+    setHistoryLoadMessage(`${currentCompany.corpName}의 2015년 이후 공개된 실제 분기 공시를 조회하고 있습니다…`);
     setApiStatusMessage(`${currentCompany.corpName}의 실제 분기 공시를 별도 조회합니다. 기본 재무 지표는 먼저 표시합니다…`);
     const timeoutId = window.setTimeout(() => {
       if (cancelled) return;
       setIsLoadingHistory(false);
-      const message = "분기 공시 조회가 45초 안에 끝나지 않았습니다. OpenDART 응답 지연 또는 인증/공시목록 조회 실패일 수 있습니다. 잠시 후 재시도하세요.";
+      const message = "분기 공시 조회가 120초 안에 끝나지 않았습니다. OpenDART 응답 지연 또는 인증/공시목록 조회 실패일 수 있습니다. 잠시 후 재시도하세요.";
       setHistoryLoadMessage(message);
       setApiStatusMessage(message);
-    }, 45_000);
+    }, 120_000);
 
     (async () => {
       // 현재 회사의 최신 스냅샷은 첫 화면/API 인증 단계에서 이미 표시됩니다.
@@ -824,17 +1009,34 @@ export default function Home() {
           ...c,
           quarterlyHistory: history.quarterlyHistory,
         } : c));
-        const message = `실제 DART 분기 ${history.quarterlyHistory.length}개를 수집했습니다. 기준: ${history.basisCode === "OFS" ? "별도(OFS)" : "연결(CFS)"}.`;
+        const latestPeriod = history.quarterlyHistory[history.quarterlyHistory.length - 1]?.period;
+        const message = `실제 DART 분기 ${history.quarterlyHistory.length}개를 수집했습니다. 최신 확인 기간: ${latestPeriod ?? "미확인"}. 기준: ${history.basisCode === "OFS" ? "별도(OFS)" : "연결(CFS)"}.`;
         setHistoryLoadMessage(message);
         setApiStatusMessage(`${currentCompany.corpName}: ${message}`);
       } else {
-        const message = history.errorMsg ?? `${currentCompany.corpName}: 확인 가능한 실제 분기 자료가 없습니다. 추정 분기를 생성하지 않았습니다.`;
+        const rawMessage = history.errorMsg ?? `${currentCompany.corpName}: 확인 가능한 실제 분기 자료가 없습니다.`;
+        const cleanedMessage = rawMessage
+          .replace(/CFS\s*\(연결\)\s*공시가 없으면\s*OFS\s*\(별도\)를\s*확인합니다\.?/gi, "")
+          .replace(/조회 실패와 실제 미공시를 구분(?:하며|합니다)[,，。]?/g, "")
+          .replace(/실제 수치가 확보되지 않은 구간은 만들어 채우지 않습니다\.?/g, "")
+          .replace(/확인되지 않은 분기 수치는 임의로 생성하지 않았습니다\.?/g, "")
+          .trim();
+        const message = /failed to fetch|networkerror|fetch failed|load failed/i.test(rawMessage)
+          ? "DART 분기자료 연결에 실패했습니다. 서버 실행 상태와 OpenDART 인증키를 확인한 뒤 다시 시도하세요."
+          : cleanedMessage || "조회 가능한 분기 공시 자료가 없습니다. 서버 연결과 OpenDART 인증 상태를 확인한 뒤 다시 시도하세요.";
         setHistoryLoadMessage(message);
         setApiStatusMessage(message);
       }
     })().catch((error) => {
       if (!cancelled) {
-        const message = error instanceof Error ? error.message : "실제 DART 분기 데이터 조회에 실패했습니다.";
+        const rawMessage = error instanceof Error ? error.message : "실제 DART 분기 데이터 조회에 실패했습니다.";
+        const message = /failed to fetch|networkerror|fetch failed|load failed/i.test(rawMessage)
+          ? "DART 분기자료 연결에 실패했습니다. 서버 실행 상태와 OpenDART 인증키를 확인한 뒤 다시 시도하세요."
+          : rawMessage
+              .replace(/CFS\s*\(연결\)\s*공시가 없으면\s*OFS\s*\(별도\)를\s*확인합니다\.?/gi, "")
+              .replace(/조회 실패와 실제 미공시를 구분(?:하며|합니다)[,，。]?/g, "")
+              .replace(/실제 수치가 확보되지 않은 구간은 만들어 채우지 않습니다\.?/g, "")
+              .trim() || "실제 DART 분기자료 조회에 실패했습니다.";
         setHistoryLoadMessage(message);
         setApiStatusMessage(message);
       }
@@ -846,41 +1048,52 @@ export default function Home() {
   // historyLoadAttemptedFor는 이 effect 안에서 설정되므로 의존성 배열에 넣으면,
   // 방금 시작한 요청이 자기 상태 업데이트 때문에 cleanup되어 영원히 로딩으로 남습니다.
   // 수동 재시도는 별도 nonce로 트리거합니다.
-  }, [activeTab, currentCompany.corpName, currentCompany.corpCode, currentCompany.quarterlyHistory?.length, apiKey, historyRetryNonce]);
+  }, [activeTab, currentCompany.corpName, currentCompany.corpCode, currentCompany.quarterlyHistory?.length, currentCompany.quarterlyHistory?.at(-1)?.period, apiKey, historyRetryNonce]);
 
   // 실제 OpenDART API 실시간 조회 및 기업 등록 함수 (가짜 Seed 생성기 완전 폐기)
   const handleFetchOrRegisterCompany = async (rawName: string, includeHistory = false, force = false): Promise<string | null> => {
     const cleanName = rawName.trim();
     if (!cleanName) return null;
     setIsRefreshingApi(true);
-    setApiStatusMessage(`'${cleanName}' OpenDART 공시 원문 조회 및 회계항등식 검증 중...`);
+    setApiStatusMessage(`'${cleanName}'의 실제 OpenDART 공시 수치를 조회하고 있습니다…`);
 
-    const { record, errorMsg } = await fetchLiveDartCompanyRecord(cleanName, apiKey, includeHistory, selectedBasis, force);
+    const { record: fetchedRecord, errorMsg } = await fetchLiveDartCompanyRecord(cleanName, apiKey, includeHistory, selectedBasis, force);
+    let record = fetchedRecord;
+    if (!record) {
+      const matches = await searchLiveDartCompanies(cleanName, apiKey, 20).catch(() => []);
+      const normalized = (value: string) => value.replace(/[\s㈜()주식회사]/g, "").toLowerCase();
+      const registered = matches.find((item) => normalized(item.name) === normalized(cleanName)) ?? matches.find((item) => normalized(item.name).includes(normalized(cleanName)) || normalized(cleanName).includes(normalized(item.name)));
+      if (registered && /^\d{6}$/.test(String(registered.stock ?? "")) && registered.stock !== "000000") record = makeDartRegisteredPlaceholder(registered);
+    }
     setIsRefreshingApi(false);
 
-    if (!record) {
-      setApiStatusMessage(errorMsg || "공시 데이터를 찾을 수 없습니다.");
+    if (record && (!/^\d{6}$/.test(String(record.stockCode ?? "")) || record.stockCode === "000000")) {
+      setApiStatusMessage("비상장 기업은 목록에 표시하지 않도록 설정되어 있습니다. 상장 종목을 선택하세요.");
       return null;
     }
-
+    if (!record) {
+      setApiStatusMessage(userFacingDartError(errorMsg, "DART 기업목록에서 해당 기업을 찾지 못했습니다."));
+      return null;
+    }
+    const finalRecord: CompanyFinancialRecord = record;
     setCompanies((prev) => {
-      const idx = prev.findIndex((c) => c.corpName.toLowerCase() === record.corpName.toLowerCase());
+      const idx = prev.findIndex((c) => c.corpName.toLowerCase() === finalRecord.corpName.toLowerCase());
       if (idx >= 0) {
         const next = [...prev];
-        next[idx] = record;
+        next[idx] = finalRecord;
         return next;
       }
-      return [...prev, record];
+      return [...prev, finalRecord];
     });
     try {
       const existing = JSON.parse(localStorage.getItem("DART_REGISTERED_COMPANIES_V1") || "[]");
       const names = Array.isArray(existing) ? existing.filter((x) => typeof x === "string") : [];
-      localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify([...new Set([...INITIAL_DART_COMPANIES, ...names, record.corpName])]));
-    } catch { localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify([...new Set([...INITIAL_DART_COMPANIES, record.corpName])])); }
-    setApiStatusMessage(
-      `✓ ${record.corpName}: ${record.verificationNote} (${record.isLiveApiFetched ? "OpenDART 실시간 수신" : "검증된 DART 공시 원문"})`
-    );
-    return record.corpName;
+      localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify([...new Set([...names, finalRecord.corpName])]));
+    } catch { localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify([finalRecord.corpName])); }
+    setApiStatusMessage(finalRecord.isLiveApiFetched
+      ? `✓ ${finalRecord.corpName}: 실제 OpenDART 재무자료를 조회했습니다. ${finalRecord.period}`
+      : `${finalRecord.corpName}: DART 기업목록 등록은 완료했습니다. 재무제표가 확인되지 않아 수치는 표시하지 않습니다.`);
+    return finalRecord.corpName;
   };
 
   // 화면용 별칭 감지는 입력 문구를 서버에 보내기 전의 보조 기능입니다.
@@ -944,107 +1157,6 @@ export default function Home() {
   }, [askExecutedQuery]);
 
 
-  const statementForMetric = (term: string): "BS" | "IS" | "CF" => {
-    const normalized = term.replace(/[\s·ㆍ]/g, "");
-    if (/차입금|운전자본|매입채무|매출채권|재고자산|자산총계|부채총계|자본총계|부채비율|차입금의존도|순차입금|유동비율/.test(normalized)) return "BS";
-    if (/CAPEX|FCF|현금흐름|설비투자|감가상각비|EBITDA/.test(normalized)) return "CF";
-    return "IS";
-  };
-
-  // DART 본문(재무제표 표)에서 Ctrl+F로 바로 찾을 수 있도록 지표를 실제 계정과목명으로 바꿉니다.
-  const accountKeywordForMetric = (term: string): string => {
-    const normalized = term.replace(/[\s·ㆍ]/g, "");
-    const map: Array<[RegExp, string]> = [
-      [/영업이익/, "영업이익"], [/순이익/, "당기순이익"], [/매출액/, "매출액"], [/EBITDA/i, "감가상각비"],
-      [/차입금|사채/, "차입금"], [/부채비율|부채총계/, "부채총계"], [/자본총계/, "자본총계"], [/자산총계|자산회전율/, "자산총계"],
-      [/운전자본|유동비율/, "유동자산"], [/금융원가/, "금융원가"], [/영업현금흐름|FCF/i, "영업활동현금흐름"], [/CAPEX|설비투자/i, "유형자산의 취득"],
-    ];
-    return map.find(([pattern]) => pattern.test(normalized))?.[1] ?? term;
-  };
-
-  // 클릭 즉시 새 탭을 연 뒤, DART 응답에서 문서번호와 해당 재무제표 eleId를 추출해 본문으로 이동합니다.
-  const openDartSource = async (term: string, receiptOverride?: string, basisOverride?: "CFS" | "OFS") => {
-    const targetReceipt = receiptOverride ?? currentCompany.rceptNo;
-    const targetBasis = basisOverride ?? currentCompany.basisCode ?? "CFS";
-    if (!/^\d{14}$/.test(targetReceipt)) {
-      setApiStatusMessage("실제 접수번호가 확인되지 않았습니다. 인증키로 해당 공시를 다시 조회한 뒤 시도하세요.");
-      return;
-    }
-    const popup = window.open("about:blank", "_blank");
-    if (!popup) {
-      setApiStatusMessage("브라우저가 새 탭 열기를 차단했습니다. 팝업을 허용한 후 다시 시도하세요.");
-      return;
-    }
-    try {
-      popup.document.title = "DART 원문으로 이동 중";
-      popup.document.body.textContent = "선택한 지표의 재무제표 본문 위치를 찾고 있습니다…";
-      popup.opener = null;
-    } catch { /* 창 이동은 계속 진행합니다. */ }
-    try {
-      const requestedStatement = statementForMetric(term);
-      const input = encodeURIComponent(JSON.stringify({ json: { rceptNo: targetReceipt, basis: targetBasis, statement: requestedStatement } }));
-      const linkController = new AbortController();
-      const linkTimeout = window.setTimeout(() => linkController.abort(), 30_000);
-      let response: Response;
-      try {
-        response = await fetch(apiUrl(`/api/trpc/dart.deepLink?input=${input}`), {
-          headers: { "X-OpenDART-Key": apiKey },
-          credentials: apiUrl("/") === "/" ? "same-origin" : "omit",
-          signal: linkController.signal,
-        });
-      } finally {
-        window.clearTimeout(linkTimeout);
-      }
-      const payload = await response.json().catch(() => ({}));
-      const data = payload?.result?.data?.json ?? payload?.result?.data;
-      let directViewerUrl: URL | null = null;
-      try {
-        const candidate = new URL(String(data?.url ?? ""));
-        const sectionTitle = String(data?.sectionTitle ?? "").replace(/[\s·ㆍ]/g, "");
-        const normalizedSection = sectionTitle.replace(/^\d+[.]?/, "");
-        const genericFinancialSection = /^(?:연결|별도|개별)?재무제표$|^재무에관한사항$/.test(normalizedSection);
-        const correctStatementTitle = (requestedStatement === "BS"
-          ? /재무상태표|대차대조표/.test(sectionTitle)
-          : requestedStatement === "IS"
-            ? /손익계산서|포괄손익/.test(sectionTitle)
-            : /현금흐름표/.test(sectionTitle)) || genericFinancialSection;
-        // 기준이 다른 본문(예: 연결 요청인데 연결재무제표가 없는 회사)은 서버가 matchType=BASIS_FALLBACK으로 표시하며, 안내 문구와 함께 허용합니다.
-        const basisFallbackAllowed = data?.matchType === "BASIS_FALLBACK";
-        const conflictsWithBasis = basisFallbackAllowed ? false : targetBasis === "CFS"
-          ? /별도|개별/.test(sectionTitle) && !/연결/.test(sectionTitle)
-          : /연결/.test(sectionTitle) && !/별도|개별/.test(sectionTitle);
-        const isExactViewer = candidate.origin === "https://dart.fss.or.kr"
-          && candidate.pathname === "/report/viewer.do"
-          && candidate.searchParams.get("rcpNo") === targetReceipt
-          && Boolean(candidate.searchParams.get("dcmNo"))
-          && Boolean(candidate.searchParams.get("eleId"))
-          && correctStatementTitle
-          && !conflictsWithBasis;
-        if (isExactViewer && data?.deepLinked === true) directViewerUrl = candidate;
-      } catch { /* 링크가 비어 있거나 URL 형식이 아니면 본문 링크로 인정하지 않습니다. */ }
-      if (!response.ok || !directViewerUrl) {
-        const reason = data?.message ?? payload?.error?.json?.message ?? "DART 목차에서 세부 재무제표 위치를 확인하지 못했습니다.";
-        const fallback = new URL("https://dart.fss.or.kr/dsaf001/main.do");
-        fallback.searchParams.set("rcpNo", targetReceipt);
-        popup.location.replace(fallback.toString());
-        setApiStatusMessage(`${term}: 세부 본문 직행 위치를 확인하지 못해 DART 공시 목차를 열었습니다. 목차에서 해당 재무제표를 선택하세요. (${reason})`);
-        return;
-      }
-      popup.location.replace(directViewerUrl.toString());
-      const keyword = accountKeywordForMetric(term);
-      let copied = false;
-      try { await navigator.clipboard.writeText(keyword); copied = true; } catch { /* 클립보드 권한은 선택 사항입니다. */ }
-      const sectionNote = data?.matchType === "BASIS_FALLBACK" || data?.matchType === "FINANCIAL_SECTION" ? ` ${String(data?.message ?? "").split(" DART ")[0]}` : "";
-      setApiStatusMessage(`${term}: DART '${String(data?.sectionTitle ?? "재무제표")}' 본문으로 이동했습니다. 표에서 '${keyword}' 행을 확인하세요${copied ? " (계정명이 복사되어 Ctrl+F로 바로 찾을 수 있습니다)" : ""}.${sectionNote}`);
-    } catch (error) {
-      // 세부 본문 위치를 추출하지 못해도 공식 접수번호가 확인된 경우 공시 목차 접근은 보장합니다.
-      const fallback = new URL("https://dart.fss.or.kr/dsaf001/main.do");
-      fallback.searchParams.set("rcpNo", targetReceipt);
-      try { popup.location.replace(fallback.toString()); } catch { /* 팝업이 닫혔으면 상태 메시지만 남깁니다. */ }
-      setApiStatusMessage(`${term}: 세부 본문 링크 생성에 실패해 DART 공시 목차를 열었습니다. (${error instanceof Error ? error.message : "알 수 없는 오류"})`);
-    }
-  };
-
   const compareExportRows: ExportTableRow[] = useMemo(() => {
     const rows: ExportTableRow[] = [];
     compareMetricIds.forEach((mId) => {
@@ -1104,6 +1216,11 @@ export default function Home() {
           </div>
 
           <div className="space-y-3">
+            {apiStatusMessage && !/확인하는 중/.test(apiStatusMessage) && (
+              <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900 leading-relaxed">
+                {apiStatusMessage}
+              </div>
+            )}
             <label className="block text-base font-bold text-slate-800">
               OpenDART API 인증키 (40자리)
             </label>
@@ -1283,6 +1400,7 @@ export default function Home() {
               </button>
             </div>
 
+
             {apiStatusMessage && (
               <div className="px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900 flex items-center justify-between">
                 <span>{apiStatusMessage}</span>
@@ -1291,8 +1409,6 @@ export default function Home() {
                 </button>
               </div>
             )}
-
-            {/* API 인증키는 최초 진입 게이트 및 좌측 하단 API 변경 버튼에서만 관리합니다. */}
 
             {/* 기준 기업 선택 & 타 기업 추가 */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-3">
@@ -1320,7 +1436,7 @@ export default function Home() {
                   if (result.record) {
                     setCompanies((prev) => prev.map((item) => item.corpName === result.record!.corpName ? result.record! : item));
                     setApiStatusMessage(`${basis === "CFS" ? "연결" : "별도"} 기준 데이터로 갱신했습니다. ${result.record.period}`);
-                  } else setApiStatusMessage(result.errorMsg || "선택한 기준의 재무제표를 찾지 못했습니다.");
+                  } else setApiStatusMessage(userFacingDartError(result.errorMsg, "선택한 기준의 재무제표를 찾지 못했습니다."));
                 }} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold text-slate-800">
                   <option value="CFS">연결 기준</option><option value="OFS">별도 기준</option>
                 </select>
@@ -1366,6 +1482,13 @@ export default function Home() {
                 </div>
               )}
             </div>
+            {companies.length > 0 && <div className="flex flex-wrap items-center gap-2 -mt-3" aria-label="등록 종목 삭제">
+              <span className="text-[11px] text-slate-500">등록 종목</span>
+              {companies.map((company) => <span key={company.corpName} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${company.corpName === selectedCorpName ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-white text-slate-700"}`}>
+                <button type="button" onClick={() => setSelectedCorpName(company.corpName)} className="hover:underline">{company.corpName}</button>
+                <button type="button" title={`${company.corpName} 삭제`} aria-label={`${company.corpName} 삭제`} onClick={() => handleRemoveRegisteredCompany(company.corpName)} className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-slate-400 hover:bg-rose-100 hover:text-rose-700"><X className="h-3 w-3" /></button>
+              </span>)}
+            </div>}
 
             {/* 상단 배너 */}
             <div className="bg-[#082f27] text-white rounded-2xl p-6 flex flex-wrap items-center justify-between gap-4">
@@ -1374,11 +1497,11 @@ export default function Home() {
                   <span className="text-emerald-300 underline underline-offset-4">
                     {currentCompany.corpName}
                   </span>{" "}
-                  최근 공시
+                  종목 현황
                 </div>
                 <div className="text-xs text-emerald-100/80">{currentCompany.period}</div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => setActiveTab("ONE_PAGER")}
                   className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition"
@@ -1399,6 +1522,8 @@ export default function Home() {
               </div>
             </div>
 
+
+
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
               <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-extrabold text-slate-900">핵심 지표</h2><span className="text-xs text-slate-500">{currentCompany.basisCode === "OFS" ? "별도 기준" : "연결 기준"}</span></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1407,6 +1532,7 @@ export default function Home() {
                   return <div key={item.key} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4"><div className="text-xs font-bold text-slate-500">{item.label}</div><div className="mt-1 text-xl font-extrabold text-slate-900">{formatMetricValue(value, "억원")}</div></div>;
                 })}
               </div>
+
             </section>
 
             {/* 커스텀 지표 (디자인 공백 축소, 우측 상단 픽토그램 제거, 추가 및 개별 삭제 '×' 작동) */}
@@ -1430,7 +1556,7 @@ export default function Home() {
               {showCustomPicker && (
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap gap-1.5">
                   {METRIC_DEFINITIONS.filter(
-                    (m) => !["매출액", "영업이익", "순이익", "자산회전율"].includes(m.id)
+                    (m) => !["매출액", "영업이익", "순이익", "자산회전율", "EBITDA"].includes(m.id)
                   ).map((m) => {
                     const isAdded = customMetricIds.includes(m.id);
                     return (
@@ -1470,6 +1596,14 @@ export default function Home() {
                     const hasAuthoritativeMetric = Boolean(serverMetricKey && currentCompany.serverMetrics && Object.prototype.hasOwnProperty.call(currentCompany.serverMetrics, serverMetricKey));
                     const serverMetricEntry = serverMetricKey ? currentCompany.serverMetrics?.[serverMetricKey] : undefined;
                     const serverMetricValue = serverMetricEntry?.value;
+                    // 외부 수치 대조 정보는 화면에 노출하지 않습니다. 계정 산식·리스부채 제외 안내 등 필요한 계산 정보만 표시합니다.
+                    const metricFormulaCandidate = serverMetricEntry?.formula || currentCompany.rawAccountMetrics?.[mDef.id]?.formula || mDef.formulaText;
+                    const metricFormulaForDisplay = /네이버 금융|FnGuide|Yahoo Finance/i.test(metricFormulaCandidate) ? mDef.formulaText : metricFormulaCandidate;
+                    const metricLinesForDisplay = [...(serverMetricEntry?.lines ?? []), ...(currentCompany.rawAccountMetrics?.[mDef.id]?.lines ?? [])]
+                      .filter((line) => !/네이버 금융|FnGuide|Yahoo Finance|출처별 비교|수치 대조|교차검증|CFS\s*\(연결\)\s*공시가 없으면|조회 실패와 실제 미공시를 구분|실제 수치가 확보되지 않은 구간은 만들어 채우지 않습니다/i.test(line));
+                    const metricDisclaimerForDisplay = serverMetricEntry?.disclaimer
+                      ? (/네이버 금융|FnGuide|Yahoo Finance/i.test(serverMetricEntry.disclaimer) ? "공시 원문에서 필요한 계정 정보를 모두 확인하지 못했습니다. 확인되지 않은 값은 임의로 보정하지 않았습니다." : serverMetricEntry.disclaimer)
+                      : undefined;
                     // 서버가 원문 계정으로 산출해 null을 반환한 지표는 로컬의 일부 계정 합계로 대체하지 않습니다.
                     // 서버 지표 매핑이 있는 항목은 반드시 같은 공시 스냅샷의 서버 계산값만 사용합니다.
                     // 서버 결과가 누락·산출불가이면 과거/별도 로컬 계정으로 계산해 헤드라인과 다른 비율을 만들지 않습니다.
@@ -1479,20 +1613,20 @@ export default function Home() {
                     // 비율 카드는 서버의 독립된 비율 값이나 로컬 계정 캐시를 쓰지 않고,
                     // 화면 헤드라인과 동일한 이번 공시의 원천 숫자로 다시 계산해 값이 어긋나지 않게 합니다.
                     const sameSnapshotDerivedValue = mDef.id === "영업이익률"
-                      ? Number.isFinite(snapshotRevenue) && snapshotRevenue !== 0 && Number.isFinite(snapshotOperatingProfit)
-                        ? snapshotOperatingProfit / snapshotRevenue * 100 : Number.NaN
+                      ? officialMetricValueForDisplay("operatingMargin")
                       : mDef.id === "순이익률"
-                        ? Number.isFinite(snapshotRevenue) && snapshotRevenue !== 0 && Number.isFinite(snapshotNetIncome)
-                          ? snapshotNetIncome / snapshotRevenue * 100 : Number.NaN
+                        ? officialMetricValueForDisplay("netMargin")
                         : Number.NaN;
-                    const marginCalculationLines: string[] | null = mDef.id === "영업이익률" && Number.isFinite(snapshotRevenue) && snapshotRevenue !== 0 && Number.isFinite(snapshotOperatingProfit)
+                    const revenueAndOperatingProfitSameSource = metricSourceTag("revenue") === metricSourceTag("operatingProfit");
+                    const revenueAndNetIncomeSameSource = metricSourceTag("revenue") === metricSourceTag("netIncome");
+                    const marginCalculationLines: string[] | null = mDef.id === "영업이익률" && revenueAndOperatingProfitSameSource && Number.isFinite(snapshotRevenue) && snapshotRevenue !== 0 && Number.isFinite(snapshotOperatingProfit)
                       ? [
                           `분자 · 영업이익: ${snapshotOperatingProfit.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}억원`,
                           `분모 · 매출액: ${snapshotRevenue.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}억원`,
                           `계산 · (${snapshotOperatingProfit.toLocaleString("ko-KR", { maximumFractionDigits: 6 })} ÷ ${snapshotRevenue.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}) × 100 = ${sameSnapshotDerivedValue.toFixed(2)}%`,
                           `기준 · ${currentCompany.basisCode === "OFS" ? "별도" : "연결"} / ${currentCompany.period || "현재 선택 공시 기간"}`,
                         ]
-                      : mDef.id === "순이익률" && Number.isFinite(snapshotRevenue) && snapshotRevenue !== 0 && Number.isFinite(snapshotNetIncome)
+                      : mDef.id === "순이익률" && revenueAndNetIncomeSameSource && Number.isFinite(snapshotRevenue) && snapshotRevenue !== 0 && Number.isFinite(snapshotNetIncome)
                         ? [
                             `분자 · 당기순이익: ${snapshotNetIncome.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}억원`,
                             `분모 · 매출액: ${snapshotRevenue.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}억원`,
@@ -1531,9 +1665,9 @@ export default function Home() {
                         <div className="text-lg font-extrabold text-slate-900 mt-1.5">
                           {formatMetricValue(val, mDef.unit)}
                         </div>
-                        {hasAuthoritativeMetric && !Number.isFinite(serverMetricValue) && (
+                        {hasAuthoritativeMetric && !Number.isFinite(serverMetricValue) && !Number.isFinite(val) && (
                           <div className="mt-1 text-[10px] leading-relaxed text-amber-700">
-                            {serverMetricEntry?.disclaimer || "필요한 공시 원천 계정을 확인하지 못했습니다. 누락값을 임의로 채우지 않았습니다."}
+                            {metricDisclaimerForDisplay || "필요한 공시 원천 계정을 확인하지 못했습니다. 누락값을 임의로 채우지 않았습니다."}
                           </div>
                         )}
                         {!Number.isFinite(val) && !serverMetricKey && (
@@ -1541,9 +1675,9 @@ export default function Home() {
                             선택한 실제 {currentCompany.basisCode === "OFS" ? "별도" : "연결"} 공시에서 이 계정의 금액을 이름·계정코드로 확인하지 못했습니다. 다른 기준의 수치나 과거 캐시로 대체하지 않았습니다.
                           </div>
                         )}
-                        <button onClick={() => void openDartSource(mDef.id)} className="mt-2 self-start text-[11px] font-bold text-emerald-700 hover:underline">DART 재무제표 본문 ↗</button>
-                        <button type="button" onClick={() => setExpandedCalculationMetric((current) => current === mId ? null : mId)} className="mt-1 self-start rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-100">{expandedCalculationMetric === mId ? "계산식 닫기" : "계산식 살펴보기"}</button>
-                        {expandedCalculationMetric === mId && <div className="mt-2 rounded-lg border border-emerald-100 bg-emerald-50/70 p-3 text-xs leading-relaxed"><div className="font-extrabold text-slate-800">계산식</div><div className="mt-1 text-slate-700">{mDef.id === "영업이익률" ? "(영업이익 ÷ 매출액) × 100" : mDef.id === "순이익률" ? "(당기순이익 ÷ 매출액) × 100" : serverMetricEntry?.formula || currentCompany.rawAccountMetrics?.[mDef.id]?.formula || mDef.formulaText}</div>{marginCalculationLines ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{marginCalculationLines.map((line, index) => <div key={`${mId}-calculation-${index}`}>{line}</div>)}</div> : (serverMetricEntry?.lines?.length || currentCompany.rawAccountMetrics?.[mDef.id]?.lines?.length) ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{[...(serverMetricEntry?.lines ?? []), ...(currentCompany.rawAccountMetrics?.[mDef.id]?.lines ?? [])].map((line, index) => <div key={`${mId}-${index}`}>{line}</div>)}</div> : <div className="mt-2 text-amber-800">공시 원천 계정을 확인하지 못했습니다. 계산에 필요한 계정과 기간을 확인하세요.</div>}{!marginCalculationLines && serverMetricEntry?.disclaimer && <div className="mt-2 text-amber-800">{serverMetricEntry.disclaimer}</div>}</div>}
+                        {mDef.id === "차입금의존도" && serverMetricEntry?.lines?.find((line) => /리스부채.*포함하지 않았습니다/.test(line)) && <div className="mt-1 text-[10px] font-semibold leading-relaxed text-amber-700">{serverMetricEntry.lines.find((line) => /리스부채.*포함하지 않았습니다/.test(line))}</div>}
+                        <button type="button" onClick={() => setExpandedCalculationMetric((current) => current === mId ? null : mId)} className="mt-1 self-start rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100">{expandedCalculationMetric === mId ? "계산식 닫기" : "계산식 살펴보기"}</button>
+                        {expandedCalculationMetric === mId && <div className="mt-2 rounded-lg border border-emerald-100 bg-emerald-50/70 p-3 text-xs leading-relaxed"><div className="font-extrabold text-slate-800">계산식</div><div className="mt-1 text-slate-700">{mDef.id === "영업이익률" ? "(영업이익 ÷ 매출액) × 100" : mDef.id === "순이익률" ? "(당기순이익 ÷ 매출액) × 100" : metricFormulaForDisplay}</div>{marginCalculationLines ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{marginCalculationLines.map((line, index) => <div key={`${mId}-calculation-${index}`}>{line}</div>)}</div> : metricLinesForDisplay.length ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{metricLinesForDisplay.map((line, index) => <div key={`${mId}-${index}`}>{line}</div>)}</div> : <div className="mt-2 text-amber-800">공시 원천 계정을 확인하지 못했습니다. 계산에 필요한 계정과 기간을 확인하세요.</div>}{!marginCalculationLines && metricDisclaimerForDisplay && <div className="mt-2 text-amber-800">{metricDisclaimerForDisplay}</div>}</div>}
                       </div>
                     );
                   })}
@@ -1602,6 +1736,13 @@ export default function Home() {
                     검색
                   </button>
                 </div>
+              </div>
+
+              <div className="relative flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                <span className="text-xs font-bold text-slate-500">질문 기업 추가</span>
+                <input value={askCompanySearch} onChange={(e) => setAskCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && askCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) setAskCorpName(name); setAskCompanySearch(""); setAskCompanySuggestions([]); } }} placeholder="DART 기업명 검색" className="w-56 rounded-lg border border-slate-300 px-3 py-2 text-xs" />
+                <button type="button" onClick={async () => { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) { setAskCorpName(name); setAskQuery(`${name} 영업이익률`); } setAskCompanySearch(""); setAskCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white">기업 추가</button>
+                {askCompanySuggestions.length > 0 && <div className="absolute left-28 top-full z-30 mt-1 max-h-60 w-72 overflow-y-auto rounded-xl border bg-white p-1 shadow-xl">{askCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAskCorpName(name); setAskQuery(`${name} 영업이익률`); } setAskCompanySearch(""); setAskCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><strong>{item.name}</strong><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}
               </div>
 
               <div className="pt-2 flex flex-wrap items-center gap-2">
@@ -1664,7 +1805,6 @@ export default function Home() {
               <LiveDartPanel
                 question={askExecutedQuery}
                 onStatusChange={setLiveAskStatus}
-                onOpenSource={(term, receipt, basis) => void openDartSource(term, receipt, basis)}
               />
             )}
 
@@ -1798,16 +1938,7 @@ export default function Home() {
                         {c.corpName}
                       </button>
                       <button
-                        onClick={() => {
-                          setCompareCorpNames((prev) => prev.filter((n) => n !== c.corpName));
-                          if (companies.length > 1) {
-                            setCompanies((prev) => {
-                              const next = prev.filter((item) => item.corpName !== c.corpName);
-                              localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify(next.map((item) => item.corpName)));
-                              return next;
-                            });
-                          }
-                        }}
+                        onClick={() => handleRemoveRegisteredCompany(c.corpName)}
                         title="기업 삭제"
                         className={`pr-2.5 pl-1 py-1.5 ${
                           isSelected ? "text-emerald-100 hover:text-rose-200" : "text-slate-400 hover:text-rose-600"
@@ -1891,7 +2022,7 @@ export default function Home() {
                           <td className="border border-slate-200 px-4 py-3.5 font-extrabold text-slate-900">
                             {comp.corpName}
                             <span className="block text-[11px] font-normal text-slate-500">
-                              {liveCompareResults[compareMetricIds[0]]?.find((row) => row.company === comp.corpName)?.period || (isRefreshingCompare ? "DART 조회 중…" : "조회 결과 없음")}
+                              {(liveCompareResults[compareMetricIds[0]]?.find((row) => row.company === comp.corpName)?.period || (isRefreshingCompare ? "DART 조회 중…" : "조회 결과 없음")).replace(/\s*[·•]\s*(네이버 금융|FnGuide|Yahoo Finance)\b/gi, "").trim()}
                             </span>
                             <span className="block text-[10px] font-semibold text-emerald-700">
                               {liveCompareResults[compareMetricIds[0]]?.find((row) => row.company === comp.corpName)?.basis || ""}
@@ -1902,8 +2033,8 @@ export default function Home() {
                             const serverRow = (liveCompareResults[mId] ?? []).find((row) => row.company === comp.corpName);
                             const hasValue = Boolean(serverRow?.found && serverRow.value !== null && Number.isFinite(serverRow.value));
                             return (
-                              <td key={mId} title={serverRow?.message ?? "실시간 OpenDART 조회 결과"} className="border border-slate-200 px-3 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
-                                {hasValue ? formatMetricValue(serverRow!.value as number, mDef.unit) : "자료 없음"}
+                              <td key={mId} title="실시간 공시 기준 조회 결과" className="border border-slate-200 px-3 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
+                                <div>{hasValue ? formatMetricValue(serverRow!.value as number, mDef.unit) : "자료 없음"}</div>
                               </td>
                             );
                           })}
@@ -1914,8 +2045,7 @@ export default function Home() {
                                 row: (liveCompareResults[metricId] ?? []).find((row) => row.company === comp.corpName),
                               })).find((entry) => entry.row?.rceptNo && /^\d{14}$/.test(entry.row.rceptNo));
                               if (!sourceEntry?.row?.rceptNo) return <span className="text-slate-400">원문 출처 미확인</span>;
-                              const rowBasis = sourceEntry.row.basis.includes("별도") ? "OFS" : "CFS";
-                              return <button type="button" onClick={() => void openDartSource(sourceEntry.metricId, sourceEntry.row!.rceptNo, rowBasis)} className="text-emerald-700 font-bold hover:underline">{sourceEntry.row.period} (#{sourceEntry.row.rceptNo}) · 본문 ↗</button>;
+                              return <a href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${sourceEntry.row.rceptNo}`} target="_blank" rel="noreferrer" className="text-emerald-700 font-bold hover:underline">{sourceEntry.row.period} (#{sourceEntry.row.rceptNo}) · 공시 원문 ↗</a>;
                             })()}
                           </td>
                         </tr>
@@ -1933,7 +2063,11 @@ export default function Home() {
            ==================================================================== */}
         {activeTab === "ADVANCED" && <AdvancedAnalysisPanel company={currentCompany} companies={companies} selectedCompanyName={selectedCorpName} apiKey={apiKey} onSelectCompany={setSelectedCorpName} onRegisterCompany={handleFetchOrRegisterCompany} />}
 
-        {activeTab === "ALERTS" && <section className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-extrabold">공시 알람</h1><p className="mt-1 text-sm text-slate-500">등록 기업의 신규 공시를 DART에서 5분마다 확인합니다. 이 화면이 열려 있는 브라우저에서 동작합니다.</p></div><div className="text-xs text-slate-500">마지막 확인 {lastAlertCheck || "확인 중"}</div></div><div className="rounded-2xl border bg-white p-4"><div className="mb-3 flex items-center justify-between"><h2 className="font-extrabold">관심 기업 ({companies.length})</h2><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setApiStatusMessage("브라우저 알림 권한을 요청했습니다. 권한을 허용하면 새 공시 알림을 받을 수 있습니다."); }} className="rounded-lg border px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div><div className="flex flex-wrap gap-2">{companies.map((item) => <span key={item.corpName} className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{item.corpName}</span>)}</div></div><div className="rounded-2xl border bg-white p-4"><div className="mb-3 flex items-center justify-between gap-2"><h2 className="font-extrabold">최근 확인된 공시</h2><div className="flex gap-2"><button type="button" onClick={() => setAlertCheckNonce((n) => n + 1)} className="rounded-lg border px-3 py-1.5 text-xs font-bold">지금 확인</button><button type="button" onClick={() => setFilingAlerts([])} className="text-xs font-bold text-slate-500">목록 비우기</button></div></div>{filingAlerts.length ? <div className="divide-y">{filingAlerts.map((item) => <div key={item.rceptNo} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><div className="text-xs text-slate-500">{item.company} · {item.receiptDate}</div><div className="mt-1 text-sm font-bold">{item.reportName}</div><div className="mt-1 text-[11px] text-slate-500">접수번호 {item.rceptNo}</div></div><a href={item.url} target="_blank" rel="noreferrer" className="text-xs font-bold text-emerald-700 underline">DART 공시 보기 ↗</a></div>)}</div> : <p className="py-8 text-center text-sm text-slate-500">새 공시가 확인되면 여기에 표시됩니다. 최초 조회는 알람 기준선을 설정하며, 이후 접수된 공시부터 팝업으로 알립니다.</p>}</div></section>}
+        {activeTab === "ALERTS" && <section className="space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-extrabold">공시 알람</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 DART 공시를 5분마다 확인합니다. 이 화면이 열려 있는 동안 브라우저에서 동작합니다.</p></div><div className="flex gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button><button type="button" onClick={() => setAlertCheckNonce((n) => n + 1)} className="rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white">지금 확인</button></div></div>
+          <div className="rounded-2xl border bg-white p-4 space-y-3"><div className="text-sm font-extrabold">관심기업 추가·삭제</div><div className="relative flex flex-wrap gap-2"><input value={alertCompanySearch} onChange={(e) => setAlertCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && alertCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])]); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); } }} placeholder="DART 상장기업 검색·등록" className="min-w-[220px] flex-1 rounded-lg border px-3 py-2 text-sm"/><button type="button" disabled={!alertCompanySearch.trim() || isRefreshingApi} onClick={async () => { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])]); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">검색 기업 등록·추가</button>{alertCompanySuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-60 w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{alertCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])]); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}</div><div className="flex flex-wrap gap-2">{alertCompanyNames.map((name) => <span key={name} className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{name}<button type="button" title={`${name} 관심기업에서 삭제`} onClick={() => setAlertCompanyNames((prev) => prev.filter((item) => item !== name))} className="text-slate-500 hover:text-rose-600"><X className="h-3.5 w-3.5" /></button></span>)}{!alertCompanyNames.length && <span className="text-xs text-slate-500">관심기업이 없습니다. 위에서 기업을 검색하거나 선택하세요.</span>}</div><div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600"><div>상태: {alertStatus}</div><div className="mt-1">마지막 성공 조회: {lastAlertCheck || "아직 없음"}</div></div></div>
+          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-extrabold text-slate-900">{alertDisplayCompany.corpName} 공시 현황</h2><p className="mt-1 text-xs text-slate-500">최근 6개월 접수 공시 · 최신순</p></div><div className="flex flex-wrap items-center gap-2"><label htmlFor="alert-view-company" className="text-xs font-semibold text-slate-600">기업 선택</label><select id="alert-view-company" aria-label="공시 현황 기업 선택" value={alertDisplayCompany.corpName} onChange={(e) => setAlertViewCompanyName(e.target.value)} className="max-w-[220px] rounded-lg border px-3 py-2 text-xs font-semibold">{companies.map((item) => <option key={item.corpName} value={item.corpName}>{item.corpName}</option>)}</select><button type="button" onClick={() => setCompanyFilingsRefreshNonce((n) => n + 1)} disabled={isLoadingCurrentFilings} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">{isLoadingCurrentFilings ? "조회 중…" : "새로고침"}</button></div></div>{currentCompanyFilings.length ? <div className="divide-y divide-slate-100">{currentCompanyFilings.slice(0, 20).map((filing) => <a key={filing.rceptNo} href={filing.url} target="_blank" rel="noreferrer" className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-emerald-50/50"><span className="w-[82px] text-xs tabular-nums text-slate-500">{filing.receiptDate.slice(0,4)}.{filing.receiptDate.slice(4,6)}.{filing.receiptDate.slice(6,8)}</span><span className="min-w-0 flex-1 text-sm font-semibold text-slate-800">{filing.reportName}</span><ExternalLink className="h-3.5 w-3.5 text-emerald-700" /></a>)}</div> : <div className="p-5 text-sm text-slate-500">{isLoadingCurrentFilings ? "DART 공시목록을 조회하고 있습니다…" : currentFilingsMessage}</div>}<p className="border-t border-slate-100 p-3 text-[11px] text-slate-500">관심기업 신규 공시 알림은 위의 ‘지금 확인’과 브라우저 알림 설정에서 계속 사용할 수 있습니다.</p></section>
+        </section>}
 
         {activeTab === "ONE_PAGER" && (
           <div className="bg-[#faf9f5] text-stone-900 border border-stone-300 rounded-2xl p-6 md:p-8 space-y-5">
@@ -1966,26 +2100,10 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="border-t-2 border-b border-stone-800 py-2 text-[11px] leading-relaxed text-stone-700">
-              <div className="grid grid-cols-12 gap-2 border-b border-stone-300 pb-1.5 mb-1.5">
-                <div className="col-span-1 font-bold text-stone-900">보완</div>
-                <div className="col-span-5">
-                  선택 기업의 실제 공시에서 확인된 연결·별도 기준만 사용하며, 누락 구간은 임의로 채우지 않음
-                </div>
-                <div className="col-span-6">
-                  분기 값은 누계 공시 차감으로 계산하며, 4분기는 사업보고서 연간 누계−3분기 누계(동일 기준)로 산출
-                </div>
-              </div>
-              <div className="text-stone-600 flex flex-wrap items-center justify-between gap-2">
-                <span>
-                  첨부 재무 기초자료 · DART 공시 API(접수번호 #{currentCompany.rceptNo}) ·{" "}
-                  <strong className="text-stone-900">
-                    AI가 새로운 사실을 마음대로 추가하지 않고 검증된 공시 근거 안에서만 서술함
-                  </strong>
-                </span>
-              </div>
+            <div className="rounded-lg border border-stone-300 bg-white/70 px-3 py-2 text-xs text-stone-600">
+              <span className="font-bold text-stone-800">최신 확인 공시:</span> {currentCompany.reportName || currentCompany.period || "DART 정기보고서"} · {currentCompany.period || "기간 미확인"} · {currentCompany.basisCode === "OFS" ? "별도 기준" : "연결 기준"}
+              {/^\d{14}$/.test(currentCompany.rceptNo || "") && <> · <a className="font-bold text-emerald-800 underline" href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${currentCompany.rceptNo}`} target="_blank" rel="noreferrer">공시 원문 확인 ↗</a></>}
             </div>
-
             <h2 className="text-lg md:text-xl font-bold text-stone-900">
               {currentCompany.corpName} 재무 종합 분석 — 매출 {officialMetricText("revenue")} · 영업이익 {officialMetricText("operatingProfit")} (영업이익률 {officialMetricText("operatingMargin", "%")})
             </h2>
@@ -2035,132 +2153,70 @@ export default function Home() {
               </section>;
             })()}
 
-            {/* 3단 동기화 차트 (실제 분기 시계열만 사용) */}
+            {/* 분기별 실적 흐름: 지표별 차트 카드로 분리해 가독성을 높입니다. */}
             {(() => {
-              const qList = currentCompany.quarterlyHistory ?? [];
-              if (!qList.length) return <div className="rounded-xl border border-dashed border-stone-300 bg-white p-8 text-center text-sm text-stone-600"><p>{isLoadingHistory ? `${currentCompany.corpName}의 DART 분기 공시를 조회하고 있습니다…` : historyLoadMessage || "아직 차트에 사용할 실제 분기 자료가 없습니다."}</p><p className="mt-2 text-xs text-stone-500">CFS(연결) 공시가 없으면 OFS(별도)를 확인합니다. 조회 실패와 실제 미공시를 구분하며, 실제 수치가 확보되지 않은 구간은 만들어 채우지 않습니다.</p><button type="button" disabled={isLoadingHistory || !apiKey} onClick={() => { setHistoryLoadAttemptedFor(""); setHistoryRetryNonce((n) => n + 1); }} className="mt-4 rounded-lg bg-stone-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">{isLoadingHistory ? "실제 공시 조회 중…" : "분기 공시 다시 조회"}</button></div>;
-              const chartWidth = 860;
-              const leftPad = 56;
-              const rightPad = 28;
-              const plotWidth = chartWidth - leftPad - rightPad;
-              const colWidth = plotWidth / qList.length;
-              const maxRev = Math.max(1, ...qList.map((q) => Math.abs(q.revenue)));
-              const maxOp = Math.max(1, ...qList.map((q) => Math.abs(q.operatingProfit)), ...qList.map((q) => Math.abs(q.separateOperatingProfit ?? 0)), ...qList.map((q) => Math.abs(q.subsidiaryAndAdjProfit ?? 0)));
-              const margins = qList.map((q) => q.revenue !== 0 ? (q.operatingProfit / q.revenue) * 100 : Number.NaN).filter(Number.isFinite);
+              const allPoints = currentCompany.quarterlyHistory ?? [];
+              if (!allPoints.length) return <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-8 text-center"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-stone-100"><BarChart3 className="h-6 w-6 text-stone-500" /></div><p className="mt-3 text-sm font-semibold text-stone-700">{isLoadingHistory ? `${currentCompany.corpName}의 분기 공시를 조회하고 있습니다…` : historyLoadMessage || "차트에 표시할 실제 분기 자료가 없습니다."}</p><button type="button" disabled={isLoadingHistory || !apiKey} onClick={() => { setHistoryLoadAttemptedFor(""); setHistoryRetryNonce((n) => n + 1); }} className="mt-4 rounded-lg bg-stone-900 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-40">{isLoadingHistory ? "조회 중…" : "분기 공시 다시 조회"}</button></div>;
+              const points = allPoints.slice(-8);
+              const latest = points[points.length - 1];
+              const previous = points.length > 1 ? points[points.length - 2] : undefined;
+              const fmt = (value: number) => value.toLocaleString("ko-KR", { maximumFractionDigits: 1 });
+              // 그래프 원천 금액은 서버에서 이미 억원으로 변환되어 있습니다.
+              // 축에서도 만/천으로 재축약하지 않고 억원 숫자를 그대로 표시합니다.
+              const compact = (value: number) => fmt(value);
+              const chartWidth = 520;
+              const left = 80;
+              const right = 12;
+              const top = 22;
+              const bottom = 151;
+              const height = bottom - top;
+              const slot = (chartWidth - left - right) / points.length;
+              const xAt = (index: number) => left + index * slot + slot / 2;
+              const deltaText = (value: number, prior?: number) => {
+                if (prior === undefined) return "직전 분기 비교 자료 없음";
+                const delta = value - prior;
+                const sign = delta > 0 ? "+" : "";
+                return `${sign}${fmt(delta)}억원 · 전분기 대비`;
+              };
+              const revenueMax = Math.max(1, ...points.map((q) => Math.abs(q.revenue))) * 1.18;
+              const operatingValues = points.flatMap((q) => [q.operatingProfit, Number.isFinite(q.separateOperatingProfit) ? q.separateOperatingProfit as number : q.operatingProfit]);
+              const operatingMin = Math.min(0, ...operatingValues);
+              const operatingMax = Math.max(0, ...operatingValues);
+              const operatingSpan = Math.max(1, operatingMax - operatingMin);
+              const operatingY = (value: number) => top + ((operatingMax - value) / operatingSpan) * height;
+              const margins = points.map((q) => q.revenue !== 0 ? (q.operatingProfit / q.revenue) * 100 : 0);
               const marginMin = Math.min(0, ...margins);
               const marginMax = Math.max(5, ...margins);
-              const marginSpan = Math.max(5, marginMax - marginMin);
-              const marginY = (margin: number) => 150 - ((margin - marginMin) / marginSpan) * 105;
-              const opBaseline = 455;
-              const opScale = 62 / maxOp;
-              const getX = (i: number) => leftPad + i * colWidth + colWidth / 2;
-
-              return (
-                <div className="bg-white border border-stone-200 rounded p-4">
-                  <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-stone-600">
-                    <span>차트 데이터 기준: <strong>{qList[0]?.basisCode === "OFS" ? "별도(OFS)" : "연결(CFS)"}</strong></span>
-                    <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#4d7c7b]" />본체(별도) 영업이익</span>
-                    <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#c26d3a]" />연결−별도 차이(자회사·조정 포함)</span>
-                    <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#a8a29e]" />분해 자료 미확인 시 총 영업이익</span>
-                  </div>
-                  <svg viewBox={`0 0 ${chartWidth} 540`} className="w-full h-auto select-none">
-
-                    {/* 1단: 이익률(%) */}
-                    <text x={leftPad} y={16} fontSize="11" fontWeight="bold" fill="#44403c">
-                      영업이익률(%)
-                    </text>
-                    {qList.map((q, idx) => {
-                      if (idx === 0) return null;
-                      const prev = qList[idx - 1];
-                      if (!Number.isFinite(prev.revenue) || prev.revenue === 0 || !Number.isFinite(prev.operatingProfit) || !Number.isFinite(q.revenue) || q.revenue === 0 || !Number.isFinite(q.operatingProfit)) return null;
-                      const opm1 = (prev.operatingProfit / prev.revenue) * 100;
-                      const opm2 = (q.operatingProfit / q.revenue) * 100;
-                      return (
-                        <line
-                          key={`opm-${idx}`}
-                          x1={getX(idx - 1)}
-                          y1={marginY(opm1)}
-                          x2={getX(idx)}
-                          y2={marginY(opm2)}
-                          stroke="#991b1b"
-                          strokeWidth="2"
-                          strokeDasharray={q.isEstimate ? "4 3" : undefined}
-                        />
-                      );
-                    })}
-                    {qList.map((q, idx) => {
-                      const x = getX(idx);
-                      const opm = Number.isFinite(q.revenue) && q.revenue !== 0 ? Number(((q.operatingProfit / q.revenue) * 100).toFixed(1)) : Number.NaN;
-                      const y = marginY(opm);
-                      if (!Number.isFinite(opm)) return null;
-                      return (
-                        <g key={`pt-${idx}`}>
-                          <circle cx={x} cy={y} r="3" fill="#991b1b" />
-                          <text x={x} y={y - 6} fontSize="9.5" fontWeight="bold" textAnchor="middle" fill="#991b1b">
-                            {opm}%
-                          </text>
-                        </g>
-                      );
-                    })}
-
-                    {/* 2단: 매출(억) */}
-                    <text x={leftPad} y={185} fontSize="11" fontWeight="bold" fill="#44403c">
-                      매출(억)
-                    </text>
-                    {qList.map((q, idx) => {
-                      const x = getX(idx);
-                      const barW = 24;
-                      const barH = (Math.abs(q.revenue) / maxRev) * 105;
-                      const y = q.revenue >= 0 ? 325 - barH : 325;
-                      return (
-                        <g key={`rev-${idx}`}>
-                          <rect x={x - barW / 2} y={y} width={barW} height={barH} fill="#57534e" />
-                          <text x={x} y={q.revenue >= 0 ? y - 5 : y + barH + 12} fontSize="9" fontWeight="600" textAnchor="middle" fill="#292524">
-                            {q.revenue.toLocaleString()}
-                          </text>
-                        </g>
-                      );
-                    })}
-
-                    {/* 3단: 영업이익(억) 본체(별도) + 자회사·연결조정 */}
-                    <text x={leftPad} y={355} fontSize="11" fontWeight="bold" fill="#44403c">
-                      영업이익(억) — 별도·연결 자료가 모두 있는 분기만 분해 표시
-                    </text>
-                    <line x1={leftPad} y1={opBaseline} x2={chartWidth - rightPad} y2={opBaseline} stroke="#d6d3d1" strokeWidth="1" />
-                    {qList.map((q, idx) => {
-                      const x = getX(idx);
-                      const barW = 24;
-                      const hasSeparate = Number.isFinite(q.separateOperatingProfit) && Number.isFinite(q.subsidiaryAndAdjProfit);
-                      const baseOp = hasSeparate ? q.separateOperatingProfit! : q.operatingProfit;
-                      const totalOp = q.operatingProfit;
-                      const baseY = opBaseline - baseOp * opScale;
-                      const totalY = opBaseline - totalOp * opScale;
-                      const baseTop = Math.min(opBaseline, baseY);
-                      const baseHeight = Math.max(1, Math.abs(baseY - opBaseline));
-                      const segmentTop = Math.min(baseY, totalY);
-                      const segmentHeight = Math.max(1, Math.abs(totalY - baseY));
-                      const totalTop = Math.min(opBaseline, totalY);
-                      return (
-                        <g key={`op-${idx}`}>
-                          {hasSeparate ? (
-                            <>
-                              <rect x={x - barW / 2} y={baseTop} width={barW} height={baseHeight} fill="#4d7c7b" />
-                              {Math.abs(totalOp - baseOp) > 0.0001 && <rect x={x - barW / 2} y={segmentTop} width={barW} height={segmentHeight} fill="#c26d3a" />}
-                            </>
-                          ) : (
-                            <rect x={x - barW / 2} y={totalTop} width={barW} height={Math.max(1, Math.abs(totalY - opBaseline))} fill="#a8a29e" />
-                          )}
-                          <text x={x} y={totalOp >= 0 ? totalTop - 5 : totalY + 12} fontSize="9.5" fontWeight="bold" textAnchor="middle" fill="#1c1917">{q.operatingProfit.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</text>
-                          <text x={x} y={512} fontSize="10" textAnchor="middle" fill="#292524">{q.period}</text>
-                        </g>
-                      );
-                    })}
-                  </svg>
+              const marginPadding = Math.max(1.5, (marginMax - marginMin) * .15);
+              const rateMin = marginMin - marginPadding;
+              const rateMax = marginMax + marginPadding;
+              const rateY = (value: number) => top + ((rateMax - value) / Math.max(1, rateMax - rateMin)) * height;
+              const ratePoints = points.map((q, index) => `${xAt(index)},${rateY(q.revenue ? q.operatingProfit / q.revenue * 100 : 0)}`).join(" ");
+              const latestMargin = latest && latest.revenue !== 0 ? latest.operatingProfit / latest.revenue * 100 : Number.NaN;
+              const previousMargin = previous && previous.revenue !== 0 ? previous.operatingProfit / previous.revenue * 100 : Number.NaN;
+              const cardClass = "overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm";
+              const valueClass = "mt-2 text-2xl font-black tracking-tight text-slate-900";
+              return <section className="space-y-4">
+                <div className="flex flex-wrap items-end justify-between gap-2 px-1"><div><h3 className="text-lg font-extrabold tracking-tight text-stone-900">분기별 실적 흐름</h3><p className="mt-1 text-xs text-stone-500">최근 {points.length}개 분기 · {points[0]?.basisCode === "OFS" ? "별도 기준" : "연결 기준"} · 원천 공시 수치</p></div><span className="rounded-full border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-stone-600">단위: 억원 · 이익률 %</span></div>
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+                  <article className={cardClass}>
+                    <header className="border-b border-slate-100 px-4 pb-3 pt-4"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-600"/><h4 className="text-sm font-extrabold text-slate-900">매출액</h4></div><span className="rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-800">분기 실적</span></div><div className={valueClass}>{latest ? fmt(latest.revenue) : "—"}<span className="ml-1 text-xs font-semibold text-slate-500">억원</span></div><p className={`mt-1 text-[11px] ${previous && latest && latest.revenue < previous.revenue ? "text-rose-600" : "text-emerald-700"}`}>{latest && previous ? deltaText(latest.revenue, previous.revenue) : "직전 분기 비교 자료 없음"}</p></header>
+                    <div className="px-2 pb-3 pt-3"><svg viewBox={`0 0 ${chartWidth} 195`} className="h-auto w-full" role="img" aria-label="최근 분기별 매출액 막대 차트">{[0,.5,1].map((ratio) => { const y = bottom - ratio * height; return <g key={ratio}><line x1={left} y1={y} x2={chartWidth-right} y2={y} stroke="#e6ecef" strokeDasharray="3 4"/><text x={left-7} y={y+3.5} textAnchor="end" fontSize="9.5" fill="#94a3b8">{compact(revenueMax*ratio)}</text></g>; })}{points.map((q,index) => {const x=xAt(index);const barHeight=Math.abs(q.revenue)/revenueMax*height;const y=bottom-barHeight;const width=Math.min(27,slot*.55);return <g key={`revenue-${q.period}`}><rect x={x-width/2} y={y} width={width} height={Math.max(1,barHeight)} rx="4" fill={index===points.length-1?"#047857":"#a7d9c8"}/><text x={x} y={Math.max(12,y-5)} textAnchor="middle" fontSize="8.5" fontWeight={index===points.length-1?700:500} fill="#334155">{fmt(q.revenue)}</text><text x={x} y="175" textAnchor="middle" fontSize="9.5" fontWeight={index===points.length-1?700:400} fill={index===points.length-1?"#047857":"#64748b"}>{q.period}</text></g>;})}</svg></div>
+                  </article>
+                  <article className={cardClass}>
+                    <header className="border-b border-slate-100 px-4 pb-3 pt-4"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500"/><h4 className="text-sm font-extrabold text-slate-900">영업이익</h4></div><span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-800">본업 수익</span></div><div className={valueClass}>{latest ? fmt(latest.operatingProfit) : "—"}<span className="ml-1 text-xs font-semibold text-slate-500">억원</span></div><p className={`mt-1 text-[11px] ${previous && latest && latest.operatingProfit < previous.operatingProfit ? "text-rose-600" : "text-emerald-700"}`}>{latest && previous ? deltaText(latest.operatingProfit, previous.operatingProfit) : "직전 분기 비교 자료 없음"}</p></header>
+                    <div className="px-2 pb-3 pt-3"><div className="mb-2 flex flex-wrap justify-center gap-x-3 gap-y-1 text-[9.5px] text-slate-500"><span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-sm bg-emerald-700"/>별도</span><span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-sm bg-amber-500"/>연결 차이</span><span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-sm bg-slate-300"/>분해 미확인</span></div><svg viewBox={`0 0 ${chartWidth} 195`} className="h-auto w-full" role="img" aria-label="최근 분기별 영업이익 막대 차트">{[-1,0,1].map((part)=>{const value=operatingMin+(operatingSpan*(part+1))/2;const y=operatingY(value);return <g key={part}><line x1={left} y1={y} x2={chartWidth-right} y2={y} stroke={Math.abs(value)<.0001?"#aab4c0":"#e6ecef"} strokeDasharray={Math.abs(value)<.0001?undefined:"3 4"}/><text x={left-7} y={y+3.5} textAnchor="end" fontSize="9.5" fill="#94a3b8">{compact(value)}</text></g>;})}{points.map((q,index)=>{const x=xAt(index);const width=Math.min(27,slot*.55);const baseline=operatingY(0);const totalY=operatingY(q.operatingProfit);const hasSeparate=Number.isFinite(q.separateOperatingProfit)&&Number.isFinite(q.subsidiaryAndAdjProfit);const separate=hasSeparate?q.separateOperatingProfit as number:q.operatingProfit;const separateY=operatingY(separate);const rect=(y1:number,y2:number,fill:string,key:string)=><rect key={key} x={x-width/2} y={Math.min(y1,y2)} width={width} height={Math.max(1,Math.abs(y2-y1))} rx="3" fill={fill}/>;return <g key={`operating-${q.period}`}>{hasSeparate?<>{rect(baseline,separateY,"#047857",`base-${q.period}`)}{Math.abs(q.operatingProfit-separate)>.0001?rect(separateY,totalY,"#f59e0b",`delta-${q.period}`):null}</>:rect(baseline,totalY,"#cbd5e1",`total-${q.period}`)}<text x={x} y={q.operatingProfit>=0?Math.max(12,totalY-5):totalY+12} textAnchor="middle" fontSize="9.5" fontWeight={index===points.length-1?700:500} fill={q.operatingProfit<0?"#be123c":"#334155"}>{compact(q.operatingProfit)}</text><text x={x} y="175" textAnchor="middle" fontSize="9.5" fontWeight={index===points.length-1?700:400} fill={index===points.length-1?"#047857":"#64748b"}>{q.period}</text></g>;})}</svg></div>
+                  </article>
+                  <article className={cardClass}>
+                    <header className="border-b border-slate-100 px-4 pb-3 pt-4"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-indigo-600"/><h4 className="text-sm font-extrabold text-slate-900">영업이익률</h4></div><span className="rounded-md bg-indigo-50 px-2 py-1 text-[10px] font-bold text-indigo-800">수익성</span></div><div className={valueClass}>{Number.isFinite(latestMargin) ? `${latestMargin.toFixed(2)}%` : "—"}</div><p className={`mt-1 text-[11px] ${Number.isFinite(latestMargin) && Number.isFinite(previousMargin) && latestMargin < previousMargin ? "text-rose-600" : "text-indigo-700"}`}>{Number.isFinite(latestMargin) && Number.isFinite(previousMargin) ? `${latestMargin-previousMargin>0?"+":""}${(latestMargin-previousMargin).toFixed(2)}%p · 전분기 대비` : "직전 분기 비교 자료 없음"}</p></header>
+                    <div className="px-2 pb-3 pt-3"><svg viewBox={`0 0 ${chartWidth} 195`} className="h-auto w-full" role="img" aria-label="최근 분기별 영업이익률 선 차트">{[0,.5,1].map((ratio)=>{const value=rateMin+(rateMax-rateMin)*ratio;const y=rateY(value);return <g key={ratio}><line x1={left} y1={y} x2={chartWidth-right} y2={y} stroke="#e6ecef" strokeDasharray="3 4"/><text x={left-7} y={y+3.5} textAnchor="end" fontSize="9.5" fill="#94a3b8">{value.toFixed(0)}%</text></g>;})}<polyline points={ratePoints} fill="none" stroke="#4f46e5" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>{points.map((q,index)=>{const value=q.revenue!==0?q.operatingProfit/q.revenue*100:0;const x=xAt(index);const y=rateY(value);return <g key={`margin-${q.period}`}><circle cx={x} cy={y} r={index===points.length-1?5:3.5} fill={index===points.length-1?"#4f46e5":"#a5b4fc"} stroke="#fff" strokeWidth="1.5"/><text x={x} y={y-9} textAnchor="middle" fontSize="9.5" fontWeight={index===points.length-1?700:500} fill="#4338ca">{value.toFixed(1)}%</text><text x={x} y="175" textAnchor="middle" fontSize="9.5" fontWeight={index===points.length-1?700:400} fill={index===points.length-1?"#4f46e5":"#64748b"}>{q.period}</text></g>;})}</svg></div>
+                  </article>
                 </div>
-              );
+                <p className="px-1 text-[11px] leading-relaxed text-stone-500">주: 최근 8개 분기만 표시합니다. 영업이익 분해가 확인되지 않은 기간은 총 영업이익으로 표시하며, 실제 공시에 없는 값은 보간하지 않습니다. 막대·선 위의 값은 해당 분기 실적입니다.</p>
+              </section>;
             })()}
 
-            {/* 실제 공시 수치로 만든 해석. 추세 비교는 동일 분기 공시가 모두 있을 때만 표기합니다. */}
+                        {/* 실제 공시 수치로 만든 해석. 추세 비교는 동일 분기 공시가 모두 있을 때만 표기합니다. */}
             <section className="rounded-xl border border-stone-300 bg-white p-4 md:p-5 space-y-3">
               <h3 className="text-base font-extrabold text-stone-900">수치 기반 평가</h3>
               <p className="text-[11px] text-stone-500">공시 수치에서 직접 계산한 해석입니다. 업종 평균·경영진 설명이 확인되지 않은 경우 업계 대비 우열이나 원인을 단정하지 않습니다.</p>
