@@ -52,3 +52,35 @@ export async function searchLiveDartCompanies(apiKey: string, query: string) {
     return [];
   }
 }
+// --- 추가할 누락된 상수 및 함수들 ---
+
+export const EMPTY__DART_RECORD = {
+  corp_code: "",
+  corp_name: "",
+  stock_code: "",
+  modify_date: "",
+  revenue: 0,
+  operating_income: 0,
+  net_income: 0,
+  total_assets: 0,
+  total_liabilities: 0,
+  total_equity: 0,
+};
+
+export const INITIAL_DART_COMPANIES = [
+  { name: "삼성전자", code: "005930", corpCode: "00126380" },
+  { name: "SK하이닉스", code: "000660", corpCode: "00164779" },
+  { name: "현대자동차", code: "005380", corpCode: "00164742" }
+];
+
+export type CompanyFinancialRecord = typeof EMPTY__DART_RECORD;
+export type QuarterlyOnePagerItem = any;
+
+export async function validateDartApikey(apiKey: string): Promise<boolean> {
+  try {
+    const data = await fetchDartCompanyInfo(apiKey, "00126380");
+    return data && data.status === "000";
+  } catch {
+    return false;
+  }
+}
