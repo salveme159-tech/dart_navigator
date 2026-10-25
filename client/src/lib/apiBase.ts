@@ -1,8 +1,13 @@
-/**
- * The API is same-origin by default for local/full-stack hosting.
- * Set VITE_API_BASE_URL at build time only when the static frontend and
- * Express API are deployed to different origins (use an https URL).
- */
-const configuredBase = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
-export const apiBaseUrl = configuredBase.replace(/\/+$/, "");
-export const apiUrl = (path: string) => `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+// client/src/lib/apiBase.ts
+
+export function getApiBaseUrl(): string {
+  // 브라우저 환경에서는 별도의 백엔드 서버 대신 빈 문자열 또는 프록시 기본값 반환
+  return "";
+}
+
+export async function apiFetch(endpoint: string, options?: RequestInit) {
+  const baseUrl = getApiBaseUrl();
+  const url = `${baseUrl}${endpoint}`;
+  const response = await fetch(url, options);
+  return response;
+}
