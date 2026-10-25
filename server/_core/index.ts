@@ -129,22 +129,6 @@ async function startServer() {
     }
   });
 
-  // Readiness endpoint for deployment checks. It exposes configuration status only, never secrets.
-  app.get("/api/agent/health", (_req, res) => {
-    const agentKeyConfigured = (process.env.AGENT_API_KEY ?? "").trim().length >= 32;
-    const openDartKeyConfigured = /^[A-Za-z0-9]{40}$/.test((process.env.OPENDART_API_KEY ?? "").trim());
-    const ready = agentKeyConfigured && openDartKeyConfigured;
-    res.status(ready ? 200 : 503).set("Cache-Control", "no-store").json({
-      status: ready ? "ready" : "configuration_required",
-      endpoint: "/api/agent/query",
-      agentKeyConfigured,
-      openDartKeyConfigured,
-      message: ready
-        ? "ChatGPT Action API 설정이 완료되었습니다. 인증 헤더를 사용해 질문을 테스트하세요."
-        : "서버 환경변수 AGENT_API_KEY(32자 이상)와 OPENDART_API_KEY(영문·숫자 40자리)를 확인하세요.",
-    });
-  });
-
   // Stable REST surface for a ChatGPT GPT Action. It uses the server's OpenDART key,
   // never accepts an OpenDART key in the request body, and requires its own bearer secret.
   app.post("/api/agent/query", async (req, res) => {
