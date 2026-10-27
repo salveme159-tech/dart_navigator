@@ -1,13 +1,24 @@
 // client/src/lib/apiBase.ts
 
+const configuredBase = (
+  import.meta.env.VITE_API_BASE_URL ?? ""
+).trim();
+
+export const apiBaseUrl = configuredBase.replace(/\/+$/, "");
+
 export function getApiBaseUrl(): string {
-  // 브라우저 환경에서는 별도의 백엔드 서버 대신 빈 문자열 또는 프록시 기본값 반환
-  return "";
+  return apiBaseUrl;
 }
 
-export async function apiFetch(endpoint: string, options?: RequestInit) {
-  const baseUrl = getApiBaseUrl();
-  const url = `${baseUrl}${endpoint}`;
-  const response = await fetch(url, options);
-  return response;
+export function apiUrl(endpoint: string): string {
+  return `${apiBaseUrl}${
+    endpoint.startsWith("/") ? endpoint : `/${endpoint}`
+  }`;
+}
+
+export async function apiFetch(
+  endpoint: string,
+  options?: RequestInit
+): Promise<Response> {
+  return fetch(apiUrl(endpoint), options);
 }
