@@ -147,7 +147,7 @@ export function runDeterministicVerification(
       tolerancePct: 0,
       passed: true,
       rceptNo: derivedQ4s[derivedQ4s.length - 1].rceptNo,
-      note: "DART 사업보고서 연간 수치에서 3분기 누적 수치를 차감하여 조건부 검증 완료",
+      note: "DART 사업보고서 연간 수치에서 3분기 누적 수치를 차감하여 4분기 산출",
     });
   }
 
@@ -157,8 +157,8 @@ export function runDeterministicVerification(
 
   const dataCompletenessNote =
     missingSeparatePeriods.length > 0
-      ? `보완 기준: ${missingSeparatePeriods.join(", ")} 구간은 별도 분기치를 보완하지 않아 연결만 표시함. 4Q는 연간-9개월 차감치(조건부). '기간 순이익/평균자본'은 연율을 곱하여 연간 ROE로 쓰지 않음.`
-      : "보완 기준: 전 분기 연결 및 본체(별도) 재무제표 교차 수집 완료. 4Q는 연간-9개월 차감치(조건부). '기간 순이익/평균자본'은 연율을 곱하여 연간 ROE로 쓰지 않음.";
+      ? `보완 기준: ${missingSeparatePeriods.join(", ")} 구간은 별도 분기치를 보완하지 않아 연결만 표시함. 4Q는 연간-9개월 차감 산출치. '기간 순이익/평균자본'은 연율을 곱하여 연간 ROE로 쓰지 않음.`
+      : "보완 기준: 전 분기 연결 및 본체(별도) 재무제표 자료 수집 완료. 4Q는 연간-9개월 차감 산출치. '기간 순이익/평균자본'은 연율을 곱하여 연간 ROE로 쓰지 않음.";
 
   const passedCount = checks.filter((c) => c.passed).length;
   const scorePct = checks.length > 0 ? Math.round((passedCount / checks.length) * 100) : 100;
