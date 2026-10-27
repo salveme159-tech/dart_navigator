@@ -1,8 +1,10 @@
-/**
- * The API is same-origin by default for local/full-stack hosting.
- * Set VITE_API_BASE_URL at build time only when the static frontend and
- * Express API are deployed to different origins (use an https URL).
- */
+// Shared API URL helpers for the web app and financial client.
 const configuredBase = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
 export const apiBaseUrl = configuredBase.replace(/\/+$/, "");
-export const apiUrl = (path: string) => `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+export function getApiBaseUrl(): string { return apiBaseUrl; }
+export function apiUrl(endpoint: string): string {
+  return `${apiBaseUrl}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
+}
+export async function apiFetch(endpoint: string, options?: RequestInit): Promise<Response> {
+  return fetch(apiUrl(endpoint), options);
+}
