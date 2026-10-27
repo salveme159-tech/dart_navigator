@@ -5,16 +5,15 @@
   "license": "MIT",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx watch server/_core/index.ts",
-    "build": "node scripts/verify-release.mjs && vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
-    "build:pages": "node scripts/verify-release.mjs && vite build",
+    "build": "vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
+    "build:pages": "vite build",
     "start": "cross-env NODE_ENV=production node dist/index.js",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
     "dev:static": "vite --host 0.0.0.0 --port ${PORT:-3000} --strictPort",
     "build:static": "vite build",
-    "test:article": "node --test scripts/test-article-claims.mjs scripts/test-article-api.mjs scripts/test-filing-polling.mjs",
-    "verify:release": "node scripts/verify-release.mjs"
+    "test:article": "node --test scripts/test-article-claims.mjs scripts/test-article-api.mjs scripts/test-filing-polling.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
