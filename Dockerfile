@@ -3,7 +3,7 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.18.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
-RUN CI=1 pnpm install --frozen-lockfile
+RUN CI=1 pnpm install --no-frozen-lockfile
 COPY . .
 ENV VITE_BASE=/
 RUN pnpm build
