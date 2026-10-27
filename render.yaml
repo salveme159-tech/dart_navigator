@@ -11,3 +11,6 @@ services:
       # 사용자가 화면에서 입력한 키를 쓰므로 서버 키는 선택 사항입니다.
       - key: OPENDART_API_KEY
         sync: false
+      # Separate long random secret used only by the ChatGPT Action endpoint.
+      - key: AGENT_API_KEY
+        sync: false

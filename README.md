@@ -11,6 +11,7 @@ DART(OpenDART) 공시자료를 기반으로 회사별 재무지표를 조회하�
 - [자연어 엔진 수정·검증 보고서](NATURAL_LANGUAGE_REPAIR_REPORT.md)
 - [ChatGPT Agent 시스템 지침 초안](CHATGPT_AGENT_INSTRUCTIONS_KO.md)
 - [ChatGPT Agent Action OpenAPI 명세](CHATGPT_AGENT_OPENAPI.yaml)
+- [ChatGPT Agent 구성·배포 가이드](CHATGPT_AGENT_SETUP_KO.md)
 - [ChatGPT 이식 메모](CHATGPT_AGENT_MIGRATION.md)
 
 ## 로컬 개발 실행
@@ -31,6 +32,8 @@ pnpm dev
 4. 브라우저에서 `http://localhost:3000`을 엽니다.
 
 ## 공개 배포 / ChatGPT Agent
+
+> 현재 저장소는 웹앱 소스와 ChatGPT Action API 준비물을 포함합니다. ChatGPT 계정 안에 사용자 정의 GPT를 자동 생성하거나 서버를 대신 배포한 상태는 아닙니다. 실제 ChatGPT Agent로 사용하려면 API 서버 배포, 환경변수 설정, GPT Action 연결 및 테스트가 필요합니다. 자세한 순서는 [ChatGPT Agent 구성·배포 가이드](CHATGPT_AGENT_SETUP_KO.md)를 따르세요.
 
 - **같은 서버에서 화면과 API를 함께 서비스**하면 기본 설정(`/api/trpc`)을 그대로 사용합니다.
 - **GitHub Pages + 별도 API 서버** 구조라면 프런트엔드를 빌드할 때 `VITE_API_BASE_URL=https://실제-API-도메인`을 지정하고, API 서버 환경변수 `CORS_ALLOWED_ORIGINS`에는 `https://계정.github.io`처럼 실제 화면의 origin만 넣습니다. API 서버를 HTTPS로 배포하세요.

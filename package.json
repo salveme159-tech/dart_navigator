@@ -12,7 +12,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "dev:static": "vite --host 0.0.0.0 --port ${PORT:-3000} --strictPort",
-    "build:static": "vite build"
+    "build:static": "vite build",
+    "test:article": "node --test scripts/test-article-claims.mjs scripts/test-article-api.mjs scripts/test-filing-polling.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
