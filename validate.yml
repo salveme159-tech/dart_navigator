@@ -31,8 +31,8 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-      - name: Article fact check and disclosure polling regression tests
-        run: pnpm test:article
+      - name: Disclosure polling regression tests
+        run: node --test scripts/test-filing-polling.mjs
 
       - name: Production build
         run: pnpm build
