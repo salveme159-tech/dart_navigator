@@ -2374,25 +2374,3 @@ function formatMetricValue(value: number, unit: string) {
 }
 
 
-/** 기사 검증은 기간·회계기준을 바꾸거나 외부 추정값으로 대체하지 않습니다. */
-export async function financialFactSource(input: {company:string;year:number;kind:Kind;mode:"cum"|"qtr";basis:"CFS"|"OFS";metric:FinancialMetric|string}, requestKey?:string) {
-  const corp = findCorp(input.company, await corps(false,requestKey));
-  if (!corp || corp.name !== input.company) return null;
-  const period=P(input.year,input.kind,input.mode);
-  const rows=await statements(corp.code,input.year,period.code,input.basis,false,requestKey);
-  if (!rows) return null;
-  const direct=["자산총계","부채총계","자본총계"].includes(input.metric);
-  const picked=direct ? pickDirectAccount(rows,period,input.metric) : (await pickMetricWithOriginalFallback({corp,rows,period,basis:input.basis,metric:input.metric as FinancialMetric,requestKey})).picked;
-  if (!picked || !Number.isFinite(picked.value)) return null;
-  const receipt=rows.find(r=>/^\d{14}$/.test(r.rcept_no??""))?.rcept_no;
-  if (!receipt) return null;
-  return {value:picked.value,unit:picked.unit,url:`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${receipt}`,citation: citation(`${periodLabel(period)} · ${modeLabel(period)} · ${fsLabel(input.basis)}`,picked.sourceHeading,receipt)};
-}
-export async function articleCompanyNames(article:string, fallback:string, requestKey?:string) {
-  const map=await corps(false,requestKey);
-  const exact=findCorp(fallback,map);
-  if (!exact) throw new TRPCError({code:"NOT_FOUND",message:"기준 기업명을 DART 기업목록에서 찾지 못했습니다. 정확한 법인명을 입력해 주세요."});
-  // 짧은 비상장 상호(예: '우리')가 일반 문장을 기업으로 인식하지 않도록 상장사만 자동 인식합니다.
-  return [...new Set([exact.name,...[...map].filter(([name,corp])=>corp.stock && name.length>=3 && article.includes(name)).map(([name])=>name)])];
-}
-export const articleDisclosureEntries=disclosureEntries;

@@ -1,4 +1,3 @@
-import { factCheckArticle } from "./dart/articleFactCheck";
 import { TRPCError } from "@trpc/server";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -32,13 +31,6 @@ export const appRouter = router({
     }),
   }),
   dart: router({
-    articleFactCheck: publicProcedure.input(z.object({
-      article:z.string().min(10).max(30000), company:z.string().min(2).max(100),
-      year:z.number().int().min(2015).max(2100), period:z.enum(["annual","half","q1","q3"]),
-      mode:z.enum(["cum","qtr"]), basis:z.enum(["CFS","OFS"]),
-      articleDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0,10)===value,"올바른 기사 기준일을 입력하세요."),
-      contractReceipt:z.string().regex(/^\d{14}$/).optional(),
-    })).mutation(({input,ctx})=>factCheckArticle(input,requireDartKey(ctx))),
     validateKey: publicProcedure.query(({ ctx }) => validateDartKey(ctx.req.header("x-opendart-key"))),
     deepLink: publicProcedure.input(z.object({ rceptNo: z.string().regex(/^\d{14}$/), basis: z.enum(["CFS", "OFS"]), statement: z.enum(["BS", "IS", "CF"]).optional() })).query(({ input, ctx }) => buildDartSectionDeepLink(input.rceptNo, input.basis, requireDartKey(ctx), input.statement ?? "BS")),
     ask: publicProcedure.input(z.object({ question: z.string().min(2).max(300) })).query(({ input, ctx }) => askDart(input.question, requireDartKey(ctx))),
