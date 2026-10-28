@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { apiBaseUrl, apiUrl } from "@/lib/apiBase";
 import LiveDartPanel from "@/components/LiveDartPanel";
-import ArticleFactCheckPanel from "@/components/ArticleFactCheckPanel";
 import { startFilingPolling } from "@/lib/filingPolling";
 import AdvancedAnalysisPanel from "@/components/AdvancedAnalysisPanel";
 import {
@@ -439,7 +438,7 @@ export default function Home() {
 
   // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·추가 기능
   const [activeTab, setActiveTab] = useState<
-    "DASHBOARD" | "ASK" | "COMPARE" | "ONE_PAGER" | "ADVANCED" | "ALERTS" | "ARTICLE_FACT_CHECK"
+    "DASHBOARD" | "ASK" | "COMPARE" | "ONE_PAGER" | "ADVANCED" | "ALERTS"
   >("DASHBOARD");
   const [showAdditionalMenu, setShowAdditionalMenu] = useState<boolean>(false);
   const [companySearchSuggestions, setCompanySearchSuggestions] = useState<Array<{name:string;code:string;stock:string}>>([]);
@@ -1362,13 +1361,12 @@ export default function Home() {
             <button
               type="button"
               onClick={() => setShowAdditionalMenu((value) => !value)}
-              className={`w-full flex items-center justify-between gap-3 px-3.5 py-3 rounded-xl text-sm font-bold transition ${activeTab === "ADVANCED" || activeTab === "ALERTS" || activeTab === "ARTICLE_FACT_CHECK" ? "bg-emerald-900/70 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50 hover:text-white"}`}
+              className={`w-full flex items-center justify-between gap-3 px-3.5 py-3 rounded-xl text-sm font-bold transition ${activeTab === "ADVANCED" || activeTab === "ALERTS" ? "bg-emerald-900/70 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50 hover:text-white"}`}
             >
               <span className="flex items-center gap-3"><Plus className="w-4 h-4" />추가 기능</span>
               <span className="text-xs">{showAdditionalMenu ? "−" : "+"}</span>
             </button>
             {showAdditionalMenu && <div className="ml-4 space-y-1 border-l border-emerald-800 pl-3">
-              <button onClick={() => setActiveTab("ARTICLE_FACT_CHECK")} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold ${activeTab === "ARTICLE_FACT_CHECK" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}>기사 팩트 체크</button>
 
               <button onClick={() => setActiveTab("ADVANCED")} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold ${activeTab === "ADVANCED" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}>손익 민감도 체크</button>
               <button onClick={() => setActiveTab("ALERTS")} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold ${activeTab === "ALERTS" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}>공시 알람 {filingAlerts.length > 0 ? `(${filingAlerts.length})` : ""}</button>
@@ -2075,7 +2073,6 @@ export default function Home() {
            ==================================================================== */}
         {activeTab === "ADVANCED" && <AdvancedAnalysisPanel company={currentCompany} companies={companies} selectedCompanyName={selectedCorpName} apiKey={apiKey} onSelectCompany={setSelectedCorpName} onRegisterCompany={handleFetchOrRegisterCompany} />}
 
-        {activeTab === "ARTICLE_FACT_CHECK" && <ArticleFactCheckPanel apiKey={apiKey} company={currentCompany.corpName} companies={companies.map(c=>c.corpName)} />}
 
         {activeTab === "ALERTS" && <section className="space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-extrabold">공시 알람</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 공시와 공시 목록을 화면 활성 시 15초 간격으로 확인하고, 화면 복귀 시 즉시 조회합니다. 백그라운드에서는 60초 간격이며 DART API 반영 시점에 따라 수신 시간이 달라집니다. 브라우저가 열려 있는 동안 동작합니다.</p></div><div className="flex gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div></div>
