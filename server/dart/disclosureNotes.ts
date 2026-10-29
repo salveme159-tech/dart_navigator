@@ -57,7 +57,7 @@ function expandTableRows(tableHtml: string): string[][] {
         if (pending[col].remaining <= 0) pending[col] = undefined as any;
       }
     }
-    const cells: Cell[] = [...rowMatch[1].matchAll(/<(?:td|th)\b([^>]*)>([\s\S]*?)<\/(?:td|th)>/gi)].map((m) => ({
+    const cells: Cell[] = [...rowMatch[1].matchAll(/<(?:td|th|te|tu)\b([^>]*)>([\s\S]*?)<\/(?:td|th|te|tu)>/gi)].map((m) => ({
       text: textOf(m[2]),
       colspan: Math.max(1, Math.min(16, Number(m[1].match(/colspan\s*=\s*["']?(\d+)/i)?.[1] ?? 1))),
       rowspan: Math.max(1, Math.min(16, Number(m[1].match(/rowspan\s*=\s*["']?(\d+)/i)?.[1] ?? 1))),
@@ -163,7 +163,8 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
         const totalRow = namesLease && !currentRow && !noncurrentRow && /합계|총계|장부금액|기말금액|리스부채$|리스부채합계/.test(rowLabel);
         // 행 자체가 '리스부채'이고 열 제목에 유동/비유동이 있는 구조를 지원합니다.
         for (const { header, index } of targetColumns) {
-          const value = parseAmount(cells[index] ?? "", unit);
+          const cell = cells[index] ?? "";
+          const value = parseAmount(cell, unit) ?? (/^[-—–－−]$/.test(textOf(cell)) ? 0 : null);
           if (value === null || value < 0) continue;
           const headerCompact = normalize(header);
           if (noncurrentRow || (/비유동/.test(headerCompact) && !/유동성/.test(headerCompact))) noncurrentValues.push(value);
@@ -206,6 +207,37 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
   // 서로 다른 주석 표가 같은 값을 반복하는 경우 중복을 합산하지 않습니다.
   const selected = candidates[0];
   return { ...selected };
+}
+
+/** Explicit debt-and-bond totals in the selected report, never a maturity cash-flow sum. */
+export function parseBorrowingTotalFromDisclosure(entries: HtmlEntry[], period: Period, basis: "CFS" | "OFS") {
+  const candidates: Array<{value:number; includesLease:boolean; sourceFile:string; label:string}> = [];
+  for (const entry of disclosureEntriesForBasis(entries, basis)) {
+    for (const match of entry.text.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)) {
+      const before = entry.text.slice(Math.max(0, (match.index ?? 0) - 700), match.index);
+      const context = `${textOf(before.slice(-300))} ${textOf(match[0])}`;
+      if (!/차입금|사채/.test(context) || /만기분석|미할인|계약상현금흐름/.test(context)) continue;
+      const unit = [...`${before} ${match[0]}`.matchAll(/단위\s*[:：]?\s*(천원|백만원|억원|원)(?![가-힣])/gi)].at(-1)?.[1];
+      if (!unit) continue;
+      const rows = expandTableRows(match[0]);
+      const width = Math.max(0, ...rows.map(row => row.length));
+      const headers = Array.from({length:width}, (_, col) => rows.slice(0, 5).map(row => row[col] ?? "").join(" "));
+      for (const cells of rows) {
+        const label = normalize(cells[0] ?? "");
+        const includesLease = /^(?:총차입금|차입금및사채).*리스(?:부채)?포함$/.test(label);
+        if (!includesLease && !/^(?:차입금및사채|차입금및회사채|차입금과사채)(?:합계|총계)?$/.test(label)) continue;
+        const values = headers.flatMap((header, col) => {
+          if (col === 0 || !isCurrentHeader(header, period)) return [];
+          const cell = cells[col] ?? "";
+          const value = parseAmount(cell, unit) ?? (/^[-—–－−]$/.test(textOf(cell)) ? 0 : null);
+          return value !== null && value >= 0 ? [value] : [];
+        });
+        if (new Set(values).size === 1) candidates.push({value:values[0], includesLease, sourceFile:entry.name, label:textOf(cells[0])});
+      }
+    }
+  }
+  if (new Set(candidates.map(item => `${item.value.toFixed(6)}:${item.includesLease}`)).size !== 1) return null;
+  return candidates[0] ?? null;
 }
 
 

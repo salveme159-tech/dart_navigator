@@ -28,7 +28,7 @@ export async function recoverStatementRows(primary:Row[], scope:StatementScope, 
     const existing=group.find(primary);
     if (existing && (amountOf(existing)!==null || amountOf(existing,0,true)!==null)) continue;
     const row=group.find(sameReceipt);
-    if (row && !additions.includes(row)) additions.push(row);
+    if (row && !additions.some(item => item.account_nm === row.account_nm && item.sj_div === row.sj_div)) additions.push({...row, source_type:"MAJOR"});
   }
   if (!additions.length) return mark(primary,"unavailable","DART 전체 재무제표와 주요계정을 확인했지만 같은 보고서·회계기준의 필요한 계정/금액을 찾지 못했습니다.");
   const combined=[...primary,...additions];
