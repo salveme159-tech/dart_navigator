@@ -927,7 +927,18 @@ async function withDartLeaseFallback(args: {
       leaseUrl = fnGuideLease.url ?? leaseUrl;
     }
   }
-  if (leaseTotal === null || !Number.isFinite(leaseTotal) || leaseTotal < 0) return externalTotalFallback(leaseUrl);
+  if (leaseTotal === null || !Number.isFinite(leaseTotal) || leaseTotal < 0) {
+    // Historical disclosures frequently omit separate lease rows. Do not discard a
+    // valid, explicitly reported borrowing aggregate merely because lease notes
+    // are unavailable. Never promote an incomplete component subtotal to a total.
+    const external = await externalTotalFallback(leaseUrl);
+    if (external.picked && Number.isFinite(external.picked.value)) return external;
+    if (picked && Number.isFinite(picked.value) && picked.value >= 0) {
+      const warning = "해당 기간 리스부채를 별도로 검증하지 못했습니다. DART 재무상태표에서 확인된 차입금만 표시하며 리스부채 포함 여부는 미확인입니다.";
+      return { picked: { ...picked, disclaimer: [picked.disclaimer, warning].filter(Boolean).join(" ") }, url: leaseUrl };
+    }
+    return external;
+  }
 
   const hasCoreAggregate = rows.some(row=>row.sj_div === "BS" && /^(총차입금|차입금총계|차입금합계|총차입부채|총이자부부채|이자부부채합계|차입금및사채|차입금및회사채|차입금과사채)$/.test((row.account_nm ?? "").replace(/\s/g,"")) && amountOf(row)!==null);
   if(!components.coreComplete && !hasCoreAggregate) return externalTotalFallback(leaseUrl);
