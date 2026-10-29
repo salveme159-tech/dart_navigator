@@ -39,7 +39,7 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  app.get("/api/health", (_req, res) => res.set("Cache-Control","no-store").json({ status: "ok",release:"dart-finder-20261029-audit18-r2",commit:process.env.RENDER_GIT_COMMIT||null }));
+  app.get("/api/health", (_req, res) => res.set("Cache-Control","no-store").json({ status: "ok",release:"dart-finder-20261029-r3",commit:process.env.RENDER_GIT_COMMIT||null }));
 
   // Market-data endpoints keep all provider credentials on the server.
   const marketCache = new Map<string, { at: number; value: unknown }>();
