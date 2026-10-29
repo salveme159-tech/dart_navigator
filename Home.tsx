@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useEffect } from "react";
+import { metricSourceLinks } from "@/lib/metricSources";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { apiBaseUrl, apiUrl } from "@/lib/apiBase";
 import LiveDartPanel from "@/components/LiveDartPanel";
+import { startComparisonLoad } from "@/lib/comparisonLoader";
 import { startFilingPolling } from "@/lib/filingPolling";
-import AdvancedAnalysisPanel from "@/components/AdvancedAnalysisPanel";
 import {
   Search,
   Plus,
@@ -62,6 +63,7 @@ type LiveCompareRow = {
   period: string;
   basis: string;
   citation?: string;
+  source?: string;
   rceptNo?: string;
   message?: string;
 };
@@ -419,14 +421,14 @@ export default function Home() {
         setSelectedBasis(loaded[0].basisCode === "OFS" ? "OFS" : "CFS");
         setAskCorpName(loaded[0].corpName);
         setAskQuery(`${loaded[0].corpName} 영업이익률`);
-        setCompareCorpNames(loaded.map((c) => c.corpName).slice(0, 8));
+        setCompareCorpNames(loaded.map((c) => c.corpName).slice(0, 10));
       }
       setIsRefreshingApi(false);
       setApiStatusMessage(loaded.length
         ? `실시간 DART 조회 완료: ${loaded.length}/${initialNames.length}개 등록 기업(상장·비상장 포함). ${failures.length ? `미조회: ${failures.join(" / ")}` : "실제 공시 조회를 완료했습니다."}`
         : initialNames.length
           ? `등록된 DART 기업의 공시 조회에 실패했습니다. 임의 수치를 표시하지 않았습니다. ${failures.join(" / ")}`
-          : "등록된 종목이 없습니다. 종목 현황에서 ‘타 기업 추가’를 눌러 등록하세요.");
+          : "등록된 종목이 없습니다. 종목 현황에서 ‘기업 검색’를 눌러 등록하세요.");
     })().catch((err) => {
       if (!cancelled) {
         setIsRefreshingApi(false);
@@ -436,15 +438,18 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [apiKey, isApiGateOpen]);
 
-  // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·추가 기능
+  // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·공시 알람 및 최근 공시 현황
   const [activeTab, setActiveTab] = useState<
-    "DASHBOARD" | "ASK" | "COMPARE" | "ONE_PAGER" | "ADVANCED" | "ALERTS"
+    "DASHBOARD" | "ASK" | "COMPARE" | "ONE_PAGER" | "ALERTS"
   >("DASHBOARD");
-  const [showAdditionalMenu, setShowAdditionalMenu] = useState<boolean>(false);
+
   const [companySearchSuggestions, setCompanySearchSuggestions] = useState<Array<{name:string;code:string;stock:string}>>([]);
   const [compareCompanySuggestions, setCompareCompanySuggestions] = useState<Array<{name:string;code:string;stock:string}>>([]);
-  const [filingAlerts, setFilingAlerts] = useState<Array<{company:string;reportName:string;receiptDate:string;rceptNo:string;url:string}>>([]);
-  const [readFilingAlertIds, setReadFilingAlertIds] = useState<Set<string>>(() => new Set());
+  const [filingAlerts, setFilingAlerts] = useState<Array<{company:string;reportName:string;receiptDate:string;rceptNo:string;url:string}>>(() => {
+    try { const rows=JSON.parse(localStorage.getItem("DART_ALERT_INBOX_V2")||"[]"); return Array.isArray(rows)?rows.filter(row=>row && /^\d{14}$/.test(row.rceptNo) && typeof row.company==="string" && typeof row.reportName==="string").map(row=>({...row,url:`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${row.rceptNo}`})).slice(0,50):[]; } catch{return []}
+  });
+  const [readFilingAlertIds, setReadFilingAlertIds] = useState<Set<string>>(() => { try { const ids=JSON.parse(localStorage.getItem("DART_ALERT_READ_V2")||"[]"); return new Set(Array.isArray(ids)?ids.filter(id=>typeof id==="string"):[]); } catch{return new Set()} });
+  useEffect(()=>{localStorage.setItem("DART_ALERT_INBOX_V2",JSON.stringify(filingAlerts));localStorage.setItem("DART_ALERT_READ_V2",JSON.stringify([...readFilingAlertIds].slice(-2000)));},[filingAlerts,readFilingAlertIds]);
   const unreadFilingAlertCount = activeTab === "ALERTS" ? 0 : filingAlerts.filter((item) => !readFilingAlertIds.has(item.rceptNo)).length;
   const markFilingAlertsRead = () => {
     setReadFilingAlertIds((previous) => new Set([...previous, ...filingAlerts.map((item) => item.rceptNo)]));
@@ -463,7 +468,7 @@ export default function Home() {
   const [alertStatus, setAlertStatus] = useState<string>("관심기업을 추가하면 신규 공시 확인을 시작합니다.");
   const [alertCompanyNames, setAlertCompanyNames] = useState<string[]>(() => {
     if (typeof window === "undefined") return [];
-    try { const saved = JSON.parse(localStorage.getItem("DART_ALERT_WATCHLIST_V1") || "[]"); return Array.isArray(saved) ? saved.filter((x) => typeof x === "string") : []; } catch { return []; }
+    try { const saved = JSON.parse(localStorage.getItem("DART_ALERT_WATCHLIST_V1") || "[]"); return Array.isArray(saved) ? saved.filter((x) => typeof x === "string").slice(0,20) : []; } catch { return []; }
   });
   const [alertCompanyChoice, setAlertCompanyChoice] = useState<string>("");
   const [alertViewCompanyName, setAlertViewCompanyName] = useState<string>("");
@@ -477,11 +482,29 @@ export default function Home() {
   const [selectedBasis, setSelectedBasis] = useState<"CFS" | "OFS">("CFS");
   const [isRefreshingApi, setIsRefreshingApi] = useState<boolean>(false);
   const [apiStatusMessage, setApiStatusMessage] = useState<string>("");
+  const [historyStartYear,setHistoryStartYear]=useState(new Date().getFullYear()-2);
+  const [historyEndYear,setHistoryEndYear]=useState(new Date().getFullYear());
   const [historyLoadAttemptedFor, setHistoryLoadAttemptedFor] = useState<string>("");
   const [historyRetryNonce, setHistoryRetryNonce] = useState<number>(0);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [historyLoadMessage, setHistoryLoadMessage] = useState<string>("");
 
+  const snapshotGeneration = useRef(0);
+  useEffect(() => {
+    const company=companies.find(c=>c.corpName===selectedCorpName);
+    const generation=++snapshotGeneration.current;
+    if(company?.basisCode===selectedBasis){setIsRefreshingApi(false);return;}
+    if (!apiKey || isApiGateOpen || !company) return;
+    const controller=new AbortController();
+    setIsRefreshingApi(true);
+    setApiStatusMessage(`${selectedBasis==="CFS"?"연결":"별도"} 기준 공시 조회 중…`);
+    void fetchLiveDartCompanyRecord(selectedCorpName,apiKey,false,selectedBasis,false,controller.signal).then(result=>{
+      if (controller.signal.aborted || generation!==snapshotGeneration.current) return;
+      if (result.record) { setCompanies(prev=>prev.map(c=>c.corpName===selectedCorpName?result.record!:c)); setApiStatusMessage(`✓ ${selectedCorpName}: 실제 OpenDART 재무자료를 조회했습니다. ${result.record.period}`); }
+      else setApiStatusMessage(result.errorMsg || "선택한 기준의 공시를 확인하지 못했습니다.");
+    }).finally(()=>{if(!controller.signal.aborted && generation===snapshotGeneration.current)setIsRefreshingApi(false);});
+    return ()=>controller.abort();
+  },[selectedCorpName,selectedBasis,apiKey,isApiGateOpen]);
   // 첫 화면: 커스텀 지표 (추가 및 삭제 완벽 작동)
   const [customMetricIds, setCustomMetricIds] = useState<string[]>([
     "차입금",
@@ -520,13 +543,14 @@ export default function Home() {
   const [liveCompareStatus, setLiveCompareStatus] = useState<string>("");
 
   const currentCompany = useMemo(
-    () => companies.find((c) => c.corpName === selectedCorpName) || companies[0] || EMPTY_DART_RECORD,
-    [companies, selectedCorpName]
+    () => { const company=companies.find((c) => c.corpName === selectedCorpName) || companies[0]; return company && company.basisCode!==selectedBasis ? {...EMPTY_DART_RECORD,corpName:company.corpName,corpCode:company.corpCode,stockCode:company.stockCode,basisCode:selectedBasis,period:"선택한 회계기준 조회 대기"} : company || EMPTY_DART_RECORD; },
+    [companies, selectedCorpName,selectedBasis]
   );
   const alertDisplayCompany = useMemo(
     () => companies.find((c) => c.corpName === alertViewCompanyName) || currentCompany,
     [companies, alertViewCompanyName, currentCompany]
   );
+  const displayedCompanyFilings=currentCompanyFilings.filter(row=>row.company===alertDisplayCompany.corpName);
   // 공시 알람의 공시 현황은 종목 현황 탭의 선택과 독립적으로 기업을 바꿔 조회할 수 있습니다.
   useEffect(() => {
     if (!apiKey || isApiGateOpen || !alertDisplayCompany.corpCode || alertDisplayCompany.corpName === "DART 조회 대기") {
@@ -534,6 +558,8 @@ export default function Home() {
       setCurrentFilingsMessage(!apiKey ? "API 인증키를 등록하면 최근 공시 현황이 표시됩니다." : "종목 정보를 불러오는 중입니다.");
       return;
     }
+    setCurrentCompanyFilings([]);
+    setCurrentFilingsMessage("공시목록 조회 중…");
     let cancelled = false;
     const toDateKey = (date: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(date).replace(/-/g, "");
     const fromDate = new Date();
@@ -691,7 +717,8 @@ export default function Home() {
   const officialMetricValue = (metricKey: string): number => {
     const value = currentCompany.serverMetrics?.[metricKey]?.value;
     if (typeof value === "number" && Number.isFinite(value)) return value;
-    // 핵심 손익 계정은 동일한 DART 스냅샷의 원문 계정 파싱값을 보조 경로로 사용합니다.
+    if(Object.prototype.hasOwnProperty.call(currentCompany.serverMetrics ?? {},metricKey))return Number.NaN;
+    // 서버 지표가 없는 구버전 응답에만 같은 공시 값을 사용합니다.
     // 서버 지표 매칭 별칭이 누락된 경우에도 실제 원문 금액을 표시하며, 임의 수치를 만들지 않습니다.
     const rawAccountKey: Record<string, keyof CompanyFinancialRecord["accounts"]> = {
       revenue: "매출액",
@@ -716,6 +743,7 @@ export default function Home() {
   const officialMetricValueForDisplay = (metricKey: string): number => {
     const directValue = currentCompany.serverMetrics?.[metricKey]?.value;
     if (typeof directValue === "number" && Number.isFinite(directValue)) return directValue;
+    if(Object.prototype.hasOwnProperty.call(currentCompany.serverMetrics ?? {},metricKey))return Number.NaN;
     if (metricKey === "operatingMargin" || metricKey === "netMargin") {
       const revenue = officialMetricValue("revenue");
       const profitKey = metricKey === "operatingMargin" ? "operatingProfit" : "netIncome";
@@ -732,78 +760,11 @@ export default function Home() {
   // serverMetrics에 별도 계산 지표가 없는 원천 계정은, 동일한 실시간 DART 응답(rawRows)에서 직접 읽습니다.
   // local snapshot이나 이전 회사 값을 사용하지 않고, 계정 행이 실제로 있을 때만 숫자를 표시합니다.
   const rawAccountValue = (metricId: string): number => {
-    // 카드 숫자는 먼저 서버에서 같은 DART 응답의 정확한 계정코드/계정명을 확인한 값을 사용합니다.
+    // Only server-normalized values are used; a second UI parser cannot invent a fallback.
     const serverRawValue = currentCompany.rawAccountMetrics?.[metricId]?.value;
     if (typeof serverRawValue === "number" && Number.isFinite(serverRawValue)) return serverRawValue;
-    const definitions: Record<string, { sj: string[]; names: string[]; ids?: RegExp[]; accountKey?: keyof RawDartAccountMap }> = {
-      "자산총계": { sj: ["BS"], names: ["자산총계", "총자산"], ids: [/^ifrs-full_Assets$/i, /^(?:dart_)?TotalAssets$/i], accountKey: "자산총계" },
-      "부채총계": { sj: ["BS"], names: ["부채총계", "총부채"], ids: [/^ifrs-full_Liabilities$/i, /^(?:dart_)?TotalLiabilities$/i], accountKey: "부채총계" },
-      "자본총계": { sj: ["BS"], names: ["자본총계", "총자본", "자본총계(지배기업의소유주에게귀속되는자본포함)"], ids: [/^ifrs-full_Equity$/i, /^(?:dart_)?TotalEquity$/i], accountKey: "자본총계" },
-      "유동자산": { sj: ["BS"], names: ["유동자산", "유동자산합계"], ids: [/^ifrs-full_CurrentAssets$/i], accountKey: "유동자산" },
-      "유동부채": { sj: ["BS"], names: ["유동부채", "유동부채합계"], ids: [/^ifrs-full_CurrentLiabilities$/i], accountKey: "유동부채" },
-      "현금및현금성자산": { sj: ["BS"], names: ["현금및현금성자산", "현금과현금성자산"], ids: [/^ifrs-full_CashAndCashEquivalents$/i], accountKey: "현금및현금성자산" },
-      "단기금융상품": { sj: ["BS"], names: ["단기금융상품", "단기투자자산", "단기예치금", "단기금융자산"], ids: [/^dart_ShortTermDepositsNotClassifiedAsCashEquivalents$/i], accountKey: "단기금융상품" },
-      "재고자산": { sj: ["BS"], names: ["재고자산", "유동재고자산", "재고자산합계"], ids: [/^ifrs-full_Inventories$/i], accountKey: "재고자산" },
-      "매입채무": { sj: ["BS"], names: ["매입채무", "매입채무및기타채무", "유동매입채무", "매입채무합계"], ids: [/^ifrs-full_TradeAndOtherCurrentPayables$/i], accountKey: "매입채무" },
-      "금융원가": { sj: ["IS", "CIS"], names: ["금융원가", "금융비용", "이자비용"], ids: [/^ifrs-full_FinanceCosts$/i], accountKey: "금융원가" },
-    };
-    const definition = definitions[metricId];
-    if (!definition) return Number.NaN;
-    // 원문 재무상태표의 자산=부채+자본 검산이 통과한 동일 스냅샷에 한해,
-    // 이미 rawRows에서 파싱한 계정값을 직접 계정 카드의 차선값으로 사용합니다.
-    // 이전 기업/스냅샷 값은 사용하지 않습니다.
-    if (currentCompany.isLiveApiFetched && currentCompany.verificationPassed && definition.accountKey) {
-      const sameReportParsedValue = currentCompany.accounts[definition.accountKey];
-      if (typeof sameReportParsedValue === "number" && Number.isFinite(sameReportParsedValue)) return sameReportParsedValue;
-    }
-    const normalize = (value: unknown) => String(value ?? "").replace(/[\s·ㆍ()（）,]/g, "").toLowerCase();
-    const wanted = definition.names.map(normalize);
-    const rows = (currentCompany.rawRows ?? []).filter((row) => {
-      const sj = String(row.sj_div ?? "").toUpperCase();
-      const sjName = String(row.sj_nm ?? "").replace(/[\s·ㆍ]/g, "");
-      const statementMatches = definition.sj.includes(sj) ||
-        (definition.sj.includes("BS") && /재무상태표|대차대조표/.test(sjName)) ||
-        (definition.sj.some((v) => v === "IS" || v === "CIS") && /손익계산서|포괄손익/.test(sjName));
-      return statementMatches;
-    });
-    const candidates = rows.map((row) => {
-      const name = normalize(row.account_nm);
-      const id = String(row.account_id ?? "");
-      const exactName = wanted.includes(name);
-      const prefixName = wanted.some((candidate) => name.startsWith(candidate));
-      const idMatch = (definition.ids ?? []).some((re) => re.test(id));
-      // 합계가 아닌 세부조정/누계 계정은 자산·부채 본계정으로 오인하지 않습니다.
-      const forbidden = /평가충당금|상각누계액|감가상각누계액|손상차손누계액|기대신용손실충당금/.test(name);
-      if (forbidden || (!exactName && !prefixName && !idMatch)) return null;
-      const score = exactName ? 0 : idMatch ? 1 : prefixName ? 2 : 3;
-      return { row, name, score };
-    }).filter((item): item is { row: RawDartRow; name: string; score: number } => item !== null);
-    candidates.sort((a, b) => a.score - b.score || a.name.length - b.name.length);
-    const parseRaw = (raw: unknown): number => {
-      const cleaned = String(raw ?? "").replace(/,/g, "").trim();
-      if (!cleaned) return Number.NaN;
-      if (/^(?:-|—|–|－|−)$/.test(cleaned)) return 0; // 원문 계정에 명시된 대시만 0
-      const negative = /^\(.*\)$/.test(cleaned);
-      const number = Number(negative ? `-${cleaned.slice(1, -1)}` : cleaned);
-      return Number.isFinite(number) ? number / 100_000_000 : Number.NaN;
-    };
-    const isBalance = definition.sj.includes("BS");
-    // 같은 계정명이 여러 번 나오면 금액이 비어 있는 행 하나 때문에 값을 잃지 않도록
-    // 정확도 우선으로 정렬한 뒤 실제 숫자가 확인되는 첫 행을 선택합니다.
-    for (const candidate of candidates) {
-      const row = candidate.row;
-      const raw = isBalance
-        ? (row.thstrm_amount || row.thstrm_add_amount)
-        : (row.thstrm_add_amount || row.thstrm_amount);
-      const parsed = parseRaw(raw);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    // 동일한 실시간 응답의 원천 행을 정규화한 계정맵을 차선으로 사용합니다. 별도/과거 데이터로 폴백하지 않습니다.
-    if (definition.accountKey) {
-      const parsedAccount = currentCompany.accounts[definition.accountKey];
-      if (typeof parsedAccount === "number" && Number.isFinite(parsedAccount)) return parsedAccount;
-    }
-    return Number.NaN;
+    const accountValue=currentCompany.accounts[metricId as keyof RawDartAccountMap];
+    return typeof accountValue==="number" && Number.isFinite(accountValue)?accountValue:Number.NaN;
   };
 
   const summaryAssessments = (() => {
@@ -811,8 +772,8 @@ export default function Home() {
     const revenue = officialMetricValue("revenue");
     const operatingProfit = officialMetricValue("operatingProfit");
     const netIncome = officialMetricValue("netIncome");
-    const opMargin = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(operatingProfit) ? operatingProfit / revenue * 100 : Number.NaN;
-    const netMargin = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(netIncome) ? netIncome / revenue * 100 : Number.NaN;
+    const opMargin = officialMetricValueForDisplay("operatingMargin");
+    const netMargin = officialMetricValueForDisplay("netMargin");
     if (Number.isFinite(revenue) && Number.isFinite(operatingProfit) && Number.isFinite(opMargin)) {
       let text = `영업이익률은 ${opMargin.toFixed(2)}%입니다. 매출 100원당 영업이익 약 ${opMargin.toFixed(2)}원에 해당합니다.`;
       if (operatingProfit > 0) text += " 본업 기준으로 영업이익은 흑자입니다.";
@@ -931,97 +892,67 @@ export default function Home() {
 
   useEffect(() => {
     if (activeTab !== "COMPARE") return;
-    if (compareCorpNames.length < 2) {
-      setLiveCompareResults({});
+    setLiveCompareResults({});
+    if (compareCorpNames.length < 2 || !apiKey || !compareMetricIds.length) {
       setIsRefreshingCompare(false);
-      setLiveCompareStatus("");
+      setLiveCompareStatus("DART 인증키와 비교 기업 2개 이상·지표를 선택하세요.");
       return;
     }
-    if (!apiKey || !compareCorpNames.length || !compareMetricIds.length) {
-      setLiveCompareResults({});
-      setLiveCompareStatus("DART 인증키와 비교 기업·지표를 선택하세요.");
-      return;
-    }
-    let cancelled = false;
     setIsRefreshingCompare(true);
-    setLiveCompareStatus("선택한 동일 기간 기준으로 각 기업의 실제 DART 공시를 조회하고 있습니다…");
-    const choice = comparePeriodChoice === "latest"
-      ? { period: "latest" as const }
-      : { year: compareYear, period: comparePeriodChoice };
-    (async () => {
-      const next: Record<string, LiveCompareRow[]> = {};
-      const errors: string[] = [];
-      await Promise.all(compareMetricIds.map(async (metricId) => {
-        const serverMetric = SERVER_METRIC_BY_UI_LABEL[metricId];
-        if (!serverMetric) {
-          next[metricId] = compareCorpNames.map((company) => ({ company, found: false, value: null, unit: "", period: "", basis: "", message: "이 지표의 실시간 비교 엔드포인트 매핑이 없습니다." }));
-          return;
-        }
-        try {
-          const inputData: Record<string, unknown> = { companies: compareCorpNames, metric: serverMetric, basis: selectedBasis, ...choice };
-          const input = encodeURIComponent(JSON.stringify({ json: inputData }));
-          const response = await fetch(apiUrl(`/api/trpc/dart.compare?input=${input}`), {
-            headers: { "X-OpenDART-Key": apiKey },
-            credentials: apiUrl("/") === "/" ? "same-origin" : "omit",
-          });
-          const payload = await response.json().catch(() => ({}));
-          const data = payload?.result?.data?.json ?? payload?.result?.data;
-          if (!response.ok || !Array.isArray(data?.rows)) throw new Error(payload?.error?.json?.message ?? payload?.error?.message ?? `${metricId} 비교 조회 실패`);
-          next[metricId] = data.rows as LiveCompareRow[];
-        } catch (error) {
-          errors.push(error instanceof Error ? error.message : `${metricId} 조회 실패`);
-          next[metricId] = compareCorpNames.map((company) => ({ company, found: false, value: null, unit: "", period: "", basis: "", message: error instanceof Error ? error.message : "조회 실패" }));
-        }
-      }));
-      if (cancelled) return;
-      setLiveCompareResults(next);
-      setIsRefreshingCompare(false);
-      const allFound = Object.values(next).flat().filter((row) => row.found).length;
-      setLiveCompareStatus(errors.length ? `일부 비교 조회 실패: ${errors.join(" / ")}` : `${allFound}개 기업·지표 결과를 실제 공시 기준으로 조회했습니다. 자료가 없으면 숫자를 만들지 않습니다.`);
-    })().catch((error) => {
-      if (!cancelled) {
-        setLiveCompareResults({});
+    const choice = comparePeriodChoice === "latest" ? {period:"latest" as const} : {year:compareYear,period:comparePeriodChoice};
+    // Each cell may finish independently: one slow company or metric must not hide completed values.
+    const tasks=compareMetricIds.flatMap(metricId=>compareCorpNames.map(company=>({metricId,company})));
+    const save=(task:typeof tasks[number],row:LiveCompareRow)=>setLiveCompareResults(prev=>({
+      ...prev,[task.metricId]:[...(prev[task.metricId] ?? []).filter(existing=>existing.company!==task.company),row],
+    }));
+    const request=startComparisonLoad({
+      tasks,concurrency:4,timeoutMs:45_000,
+      load:async(task,signal):Promise<LiveCompareRow>=>{
+        const metric=SERVER_METRIC_BY_UI_LABEL[task.metricId];
+        if(!metric)throw new Error("이 지표의 실시간 비교 엔드포인트 매핑이 없습니다.");
+        const input=encodeURIComponent(JSON.stringify({json:{companies:[task.company],metric,basis:selectedBasis,...choice,includeValidation:false}}));
+        const response=await fetch(apiUrl(`/api/trpc/dart.compare?input=${input}`),{
+          signal,cache:"no-store",headers:{"X-OpenDART-Key":apiKey},
+          credentials:apiUrl("/")==="/" ? "same-origin" : "omit",
+        });
+        const payload=await response.json().catch(()=>({}));
+        const data=payload?.result?.data?.json ?? payload?.result?.data;
+        if(!response.ok || !Array.isArray(data?.rows))throw new Error(payload?.error?.json?.message ?? payload?.error?.message ?? `${task.metricId} 비교 조회 실패`);
+        const row=data.rows.find((item:LiveCompareRow)=>item.company===task.company) ?? data.rows[0];
+        if(!row)throw new Error("기업별 조회 결과가 비어 있습니다.");
+        return {...row,company:task.company};
+      },
+      onResult:save,
+      onError:(task,error)=>save(task,{company:task.company,found:false,value:null,unit:"",period:"",basis:"",message:error instanceof Error ? error.message : "조회 실패"}),
+      onProgress:({completed,total})=>setLiveCompareStatus(`선택한 기간의 공시 조회 중… ${completed}/${total}개 완료`),
+      onComplete:({completed,failed})=>{
         setIsRefreshingCompare(false);
-        setLiveCompareStatus(userFacingDartError(error, "실시간 비교 조회에 실패했습니다."));
-      }
+        setLiveCompareStatus(`${completed}개 기업·지표 조회 완료${failed ? ` · ${failed}개 요청 실패(각 셀의 사유 확인)` : ""}. DART 조회값을 우선 표시하며 외부 사이트 교차검증 대기는 생략합니다.`);
+      },
     });
-    return () => { cancelled = true; };
+    return ()=>request.cancel();
   }, [activeTab, apiKey, compareCorpNames, compareMetricIds, comparePeriodChoice, compareYear, selectedBasis]);
 
   useEffect(() => {
-    const attemptKey = `${currentCompany.corpName}:${apiKey.slice(-6)}`;
-    const historyPoints = currentCompany.quarterlyHistory ?? [];
-    // 기존 저장/스냅샷에 1분기까지의 이력이 남아 있어도 그것만으로 갱신을 생략하지 않습니다.
-    // 현재 날짜 기준 실제 제출기한이 지난 가장 최근 분기(10월에는 2Q)를 포함하는지 확인합니다.
-    const now = new Date();
-    const month = now.getMonth() + 1;
-    const expectedPeriod = month >= 11
-      ? `3Q${String(now.getFullYear()).slice(-2)}`
-      : month >= 8
-        ? `2Q${String(now.getFullYear()).slice(-2)}`
-        : month >= 5
-          ? `1Q${String(now.getFullYear()).slice(-2)}`
-          : `4Q${String(now.getFullYear() - 1).slice(-2)}`;
-    const hasLatestPublishedQuarter = historyPoints.some((point) => point.period === expectedPeriod);
-    if ((activeTab !== "ONE_PAGER" && activeTab !== "ADVANCED") || !apiKey || hasLatestPublishedQuarter || historyLoadAttemptedFor === attemptKey) return;
-    let cancelled = false;
+    const attemptKey = `${currentCompany.corpName}:${selectedBasis}:${historyStartYear}:${historyEndYear}:${apiKey.slice(-6)}`;
+    if (activeTab !== "ONE_PAGER" || !apiKey || !currentCompany.isLiveApiFetched || historyLoadAttemptedFor === attemptKey) return;
+    let cancelled = false,completed=false;
+    setCompanies(prev=>prev.map(c=>c.corpName===currentCompany.corpName && c.basisCode===selectedBasis?{...c,quarterlyHistory:[]}:c));
     setHistoryLoadAttemptedFor(attemptKey);
     setIsLoadingHistory(true);
-    setHistoryLoadMessage(`${currentCompany.corpName}의 2015년 이후 공개된 실제 분기 공시를 조회하고 있습니다…`);
+    setHistoryLoadMessage(`${currentCompany.corpName}의 선택한 기간의 실제 분기 공시를 조회하고 있습니다…`);
     setApiStatusMessage(`${currentCompany.corpName}의 실제 분기 공시를 별도 조회합니다. 기본 재무 지표는 먼저 표시합니다…`);
-    const timeoutId = window.setTimeout(() => {
-      if (cancelled) return;
-      setIsLoadingHistory(false);
-      const message = "분기 공시 조회가 120초 안에 끝나지 않았습니다. OpenDART 응답 지연 또는 인증/공시목록 조회 실패일 수 있습니다. 잠시 후 재시도하세요.";
-      setHistoryLoadMessage(message);
-      setApiStatusMessage(message);
-    }, 120_000);
+    const historyController=new AbortController();
 
     (async () => {
       // 현재 회사의 최신 스냅샷은 첫 화면/API 인증 단계에서 이미 표시됩니다.
       // 보고서 진입 시 같은 스냅샷을 다시 조회하면 분기 시계열 요청이 시작조차 늦어질 수 있어,
       // 여기서는 분기 자료 전용 API를 바로 호출합니다.
-      const history = await fetchLiveDartCompanyHistory(currentCompany.corpName, apiKey);
+      const history = await fetchLiveDartCompanyHistory(currentCompany.corpName, apiKey,selectedBasis,historyStartYear,historyEndYear,historyController.signal,(completed,total,points)=>{
+        if(cancelled)return;
+        setHistoryLoadMessage(`분기 공시 ${completed}/${total}개 연도 확인 · 실제 분기 ${points.length}개 수집 중…`);
+        setCompanies(prev=>prev.map(c=>c.corpName===currentCompany.corpName && c.basisCode===selectedBasis?{...c,quarterlyHistory:points}:c));
+      });
       if (cancelled) return;
       if (history.quarterlyHistory.length) {
         setCompanies((prev) => prev.map((c) => c.corpName === currentCompany.corpName ? {
@@ -1030,7 +961,7 @@ export default function Home() {
         } : c));
         const latestPeriod = history.quarterlyHistory[history.quarterlyHistory.length - 1]?.period;
         const message = `실제 DART 분기 ${history.quarterlyHistory.length}개를 수집했습니다. 최신 확인 기간: ${latestPeriod ?? "미확인"}. 기준: ${history.basisCode === "OFS" ? "별도(OFS)" : "연결(CFS)"}.`;
-        setHistoryLoadMessage(message);
+        setHistoryLoadMessage(history.errorMsg ? `${message} 일부 기간 확인 필요: ${history.errorMsg}` : message);
         setApiStatusMessage(`${currentCompany.corpName}: ${message}`);
       } else {
         const rawMessage = history.errorMsg ?? `${currentCompany.corpName}: 확인 가능한 실제 분기 자료가 없습니다.`;
@@ -1060,30 +991,33 @@ export default function Home() {
         setApiStatusMessage(message);
       }
     }).finally(() => {
-      window.clearTimeout(timeoutId);
-      if (!cancelled) setIsLoadingHistory(false);
+      if (!cancelled) {completed=true;setIsLoadingHistory(false);}
     });
-    return () => { cancelled = true; window.clearTimeout(timeoutId); };
+    return () => { cancelled = true; historyController.abort();if(!completed)setHistoryLoadAttemptedFor(""); };
   // historyLoadAttemptedFor는 이 effect 안에서 설정되므로 의존성 배열에 넣으면,
   // 방금 시작한 요청이 자기 상태 업데이트 때문에 cleanup되어 영원히 로딩으로 남습니다.
   // 수동 재시도는 별도 nonce로 트리거합니다.
-  }, [activeTab, currentCompany.corpName, currentCompany.corpCode, currentCompany.quarterlyHistory?.length, currentCompany.quarterlyHistory?.at(-1)?.period, apiKey, historyRetryNonce]);
+  }, [activeTab, currentCompany.corpName, currentCompany.corpCode,currentCompany.isLiveApiFetched, apiKey, historyRetryNonce,selectedBasis,historyStartYear,historyEndYear]);
 
   // 실제 OpenDART API 실시간 조회 및 기업 등록 함수 (가짜 Seed 생성기 완전 폐기)
   const handleFetchOrRegisterCompany = async (rawName: string, includeHistory = false, force = false): Promise<string | null> => {
+    const generation=++snapshotGeneration.current;
     const cleanName = rawName.trim();
     if (!cleanName) return null;
     setIsRefreshingApi(true);
     setApiStatusMessage(`'${cleanName}'의 실제 OpenDART 공시 수치를 조회하고 있습니다…`);
 
     const { record: fetchedRecord, errorMsg } = await fetchLiveDartCompanyRecord(cleanName, apiKey, includeHistory, selectedBasis, force);
+    if(generation!==snapshotGeneration.current) return null;
     let record = fetchedRecord;
+    if (!record && force) { setIsRefreshingApi(false); setApiStatusMessage(userFacingDartError(errorMsg,"갱신에 실패했습니다. 기존 조회값을 유지합니다.")); return null; }
     if (!record) {
       const matches = await searchLiveDartCompanies(cleanName, apiKey, 20).catch(() => []);
       const normalized = (value: string) => value.replace(/[\s㈜()주식회사]/g, "").toLowerCase();
       const registered = matches.find((item) => normalized(item.name) === normalized(cleanName)) ?? matches.find((item) => normalized(item.name).includes(normalized(cleanName)) || normalized(cleanName).includes(normalized(item.name)));
       if (registered && /^\d{6}$/.test(String(registered.stock ?? "")) && registered.stock !== "000000") record = makeDartRegisteredPlaceholder(registered);
     }
+    if(generation!==snapshotGeneration.current) return null;
     setIsRefreshingApi(false);
 
     if (record && (!/^\d{6}$/.test(String(record.stockCode ?? "")) || record.stockCode === "000000")) {
@@ -1095,6 +1029,7 @@ export default function Home() {
       return null;
     }
     const finalRecord: CompanyFinancialRecord = record;
+    if(force){setHistoryLoadAttemptedFor("");setHistoryRetryNonce(n=>n+1);}
     setCompanies((prev) => {
       const idx = prev.findIndex((c) => c.corpName.toLowerCase() === finalRecord.corpName.toLowerCase());
       if (idx >= 0) {
@@ -1110,7 +1045,7 @@ export default function Home() {
       localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify([...new Set([...names, finalRecord.corpName])]));
     } catch { localStorage.setItem("DART_REGISTERED_COMPANIES_V1", JSON.stringify([finalRecord.corpName])); }
     setApiStatusMessage(finalRecord.isLiveApiFetched
-      ? `✓ ${finalRecord.corpName}: 실제 OpenDART 재무자료를 조회했습니다. ${finalRecord.period}`
+      ? `✓ ${finalRecord.corpName}: 실제 OpenDART 재무자료를 조회했습니다. ${finalRecord.period}${finalRecord.dataNotice ? ` · ${finalRecord.dataNotice}` : ""}`
       : `${finalRecord.corpName}: DART 기업목록 등록은 완료했습니다. 재무제표가 확인되지 않아 수치는 표시하지 않습니다.`);
     return finalRecord.corpName;
   };
@@ -1190,7 +1125,9 @@ export default function Home() {
           valueFormatted: row.found && Number.isFinite(row.value) ? formatMetricValue(row.value as number, mDef.unit) : "자료 없음",
           rawUnitValue: row.found && Number.isFinite(row.value) ? `${row.value} (${row.unit})` : "N/A",
           formulaOrAccount: row.message ?? mDef.formulaText,
-          sourceReport: row.period || "DART 자료 미확인",
+          sourceReport: `${row.period || "자료 미확인"} · ${row.source || "출처 미확인"} · ${row.citation || ""}`,
+          basis: row.basis,
+          sourceUrls: metricSourceLinks(row.citation,row.rceptNo).map(item=>item.url).join(" | "),
           rceptNo: row.rceptNo ?? "미확인",
         });
       });
@@ -1243,7 +1180,7 @@ export default function Home() {
             <label className="block text-base font-bold text-slate-800">
               OpenDART API 인증키 (40자리)
             </label>
-            <div className="flex flex-col sm:flex-row gap-2.5">
+            <div className="flex flex-col lg:flex-row gap-2.5">
               <input
                 type="text"
                 value={apiInputDraft}
@@ -1313,7 +1250,7 @@ export default function Home() {
       <aside className="w-full md:w-60 bg-[#0b241d] text-white flex flex-col justify-between p-5 shrink-0 print:hidden">
         <div className="space-y-6">
           <div className="px-2 pt-1 pb-3 border-b border-emerald-900/60">
-            <div className="text-2xl font-black tracking-tight text-white">DART</div>
+            <div className="text-2xl font-black tracking-tight text-white">DART FINDER</div>
           </div>
 
           <nav className="space-y-1.5">
@@ -1368,19 +1305,8 @@ export default function Home() {
               요약 보고서
             </button>
 
-            <button
-              type="button"
-              onClick={() => setShowAdditionalMenu((value) => !value)}
-              className={`w-full flex items-center justify-between gap-3 px-3.5 py-3 rounded-xl text-sm font-bold transition ${activeTab === "ADVANCED" || activeTab === "ALERTS" ? "bg-emerald-900/70 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50 hover:text-white"}`}
-            >
-              <span className="flex items-center gap-3"><Plus className="w-4 h-4" />추가 기능</span>
-              <span className="text-xs">{showAdditionalMenu ? "−" : "+"}</span>
-            </button>
-            {showAdditionalMenu && <div className="ml-4 space-y-1 border-l border-emerald-800 pl-3">
+            <button onClick={() => setActiveTab("ALERTS")} className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-bold ${activeTab === "ALERTS" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}><BookOpen className="w-4 h-4 shrink-0" /><span>공시 알람 및 최근 공시 현황 {unreadFilingAlertCount > 0 ? `(${unreadFilingAlertCount})` : ""}</span></button>
 
-              <button onClick={() => setActiveTab("ADVANCED")} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold ${activeTab === "ADVANCED" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}>손익 민감도 체크</button>
-              <button onClick={() => setActiveTab("ALERTS")} className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold ${activeTab === "ALERTS" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}>공시 알람 {unreadFilingAlertCount > 0 ? `(${unreadFilingAlertCount})` : ""}</button>
-            </div>}
           </nav>
         </div>
 
@@ -1410,64 +1336,18 @@ export default function Home() {
                 <h1 className="text-2xl font-extrabold text-slate-900">종목 현황</h1>
 
               </div>
-              <button
-                onClick={() => handleFetchOrRegisterCompany(currentCompany.corpName, false, true)}
-                disabled={isRefreshingApi}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-2xs"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingApi ? "animate-spin" : ""}`} />
-                {isRefreshingApi ? "DART 조회 중..." : "최신 데이터 갱신"}
-              </button>
+
             </div>
 
 
-            {apiStatusMessage && (
-              <div className="px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900 flex items-center justify-between">
-                <span>{apiStatusMessage}</span>
-                <button onClick={() => setApiStatusMessage("")} className="text-emerald-700">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
 
-            {/* 기준 기업 선택 & 타 기업 추가 */}
-            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-3">
-              <span className="text-xs font-bold text-slate-500">기준 기업</span>
-              <select
-                value={selectedCorpName}
-                onChange={(e) => setSelectedCorpName(e.target.value)}
-                className="px-3.5 py-2 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600"
-              >
-                {companies.map((c) => (
-                  <option key={c.corpName} value={c.corpName}>
-                    {c.corpName} ({c.stockCode})
-                  </option>
-                ))}
-              </select>
-              <label className="flex items-center gap-2 text-xs font-bold text-slate-600">재무제표 기준
-                <select value={selectedBasis} onChange={async (e) => {
-                  const basis = e.target.value as "CFS" | "OFS";
-                  setSelectedBasis(basis);
-                  if (!apiKey || !currentCompany.corpName || currentCompany.corpName === "DART 조회 대기") return;
-                  setIsRefreshingApi(true);
-                  setApiStatusMessage(`${basis === "CFS" ? "연결" : "별도"} 기준 공시를 조회하고 있습니다…`);
-                  const result = await fetchLiveDartCompanyRecord(currentCompany.corpName, apiKey, false, basis);
-                  setIsRefreshingApi(false);
-                  if (result.record) {
-                    setCompanies((prev) => prev.map((item) => item.corpName === result.record!.corpName ? result.record! : item));
-                    setApiStatusMessage(`${basis === "CFS" ? "연결" : "별도"} 기준 데이터로 갱신했습니다. ${result.record.period}`);
-                  } else setApiStatusMessage(userFacingDartError(result.errorMsg, "선택한 기준의 재무제표를 찾지 못했습니다."));
-                }} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold text-slate-800">
-                  <option value="CFS">연결 기준</option><option value="OFS">별도 기준</option>
-                </select>
-              </label>
-
+            <div className="flex flex-wrap items-center gap-3">
               {!showAddCorpInput ? (
                 <button
                   onClick={() => setShowAddCorpInput(true)}
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50"
                 >
-                  <Plus className="w-3.5 h-3.5" /> 타 기업 추가
+                  <Plus className="w-3.5 h-3.5" /> 기업 검색
                 </button>
               ) : (
                 <div className="relative flex items-center gap-2">
@@ -1502,10 +1382,48 @@ export default function Home() {
                 </div>
               )}
             </div>
+            {/* 기준 기업 선택 & 기업 검색 */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-3">
+              <span className="text-xs font-bold text-slate-500">기준 기업</span>
+              <select
+                value={selectedCorpName}
+                onChange={(e) => { setSelectedCorpName(e.target.value); setApiStatusMessage(""); }}
+                className="px-3.5 py-2 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600"
+              >
+                {companies.map((c) => (
+                  <option key={c.corpName} value={c.corpName}>
+                    {c.corpName} ({c.stockCode})
+                  </option>
+                ))}
+              </select>
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-600">재무제표 기준
+                <select value={selectedBasis} onChange={(e) => setSelectedBasis(e.target.value as "CFS" | "OFS")} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold text-slate-800">
+                  <option value="CFS">연결 기준</option><option value="OFS">별도 기준</option>
+                </select>
+              </label>
+
+              <button
+                onClick={() => handleFetchOrRegisterCompany(currentCompany.corpName, false, true)}
+                disabled={isRefreshingApi}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-2xs"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingApi ? "animate-spin" : ""}`} />
+                {isRefreshingApi ? "DART 조회 중..." : "최신 데이터 갱신"}
+              </button>
+            </div>
+            {apiStatusMessage && (
+              <div className="px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900 flex items-center justify-between">
+                <span>{apiStatusMessage}</span>
+                <button onClick={() => setApiStatusMessage("")} className="text-emerald-700">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {companies.length > 0 && <div className="flex flex-wrap items-center gap-2 -mt-3" aria-label="등록 종목 삭제">
               <span className="text-[11px] text-slate-500">등록 종목</span>
               {companies.map((company) => <span key={company.corpName} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${company.corpName === selectedCorpName ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-white text-slate-700"}`}>
-                <button type="button" onClick={() => setSelectedCorpName(company.corpName)} className="hover:underline">{company.corpName}</button>
+                <button type="button" onClick={() => { setSelectedCorpName(company.corpName); setApiStatusMessage(""); }} className="hover:underline">{company.corpName}</button>
                 <button type="button" title={`${company.corpName} 삭제`} aria-label={`${company.corpName} 삭제`} onClick={() => handleRemoveRegisteredCompany(company.corpName)} className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-slate-400 hover:bg-rose-100 hover:text-rose-700"><X className="h-3 w-3" /></button>
               </span>)}
             </div>}
@@ -1519,7 +1437,7 @@ export default function Home() {
                   </span>{" "}
                   종목 현황
                 </div>
-                <div className="text-xs text-emerald-100/80">{currentCompany.period}</div>
+                <div className="text-xs text-emerald-100/80">{currentCompany.period}</div>{currentCompany.dataNotice && <p role="status" className="text-xs text-amber-200">{currentCompany.dataNotice}</p>}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <button
@@ -1545,7 +1463,7 @@ export default function Home() {
 
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
-              <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-extrabold text-slate-900">핵심 지표</h2><span className="text-xs text-slate-500">{currentCompany.basisCode === "OFS" ? "별도 기준" : "연결 기준"}</span></div>
+              <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-extrabold text-slate-900">주요 실적</h2><span className="text-xs text-slate-500">{currentCompany.basisCode === "OFS" ? "별도 기준" : "연결 기준"}</span></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {[{label:"매출액",key:"revenue"},{label:"영업이익",key:"operatingProfit"},{label:"순이익",key:"netIncome"}].map((item) => {
                   const value = officialMetricValue(item.key);
@@ -1737,7 +1655,7 @@ export default function Home() {
                   ))}
                 </select>
 
-                <div className="flex-1 flex gap-2">
+                <div className="min-w-0 flex gap-2 lg:w-1/2">
                   <input
                     type="text"
                     value={askQuery}
@@ -1746,7 +1664,7 @@ export default function Home() {
                       if (e.key === "Enter") handleRunAskSearch();
                     }}
                     placeholder="예: 대한전선 2026년 상반기 영업이익률, 최근 3년 매출액 추이, 차입금의존도"
-                    className="flex-1 px-4 py-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    className="min-w-0 flex-1 px-4 py-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                   <button
                     onClick={() => handleRunAskSearch()}
@@ -1756,14 +1674,15 @@ export default function Home() {
                     검색
                   </button>
                 </div>
-              </div>
-
-              <div className="relative flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
-                <span className="text-xs font-bold text-slate-500">질문 기업 추가</span>
-                <input value={askCompanySearch} onChange={(e) => setAskCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && askCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) setAskCorpName(name); setAskCompanySearch(""); setAskCompanySuggestions([]); } }} placeholder="DART 기업명 검색" className="w-56 rounded-lg border border-slate-300 px-3 py-2 text-xs" />
-                <button type="button" onClick={async () => { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) { setAskCorpName(name); setAskQuery(`${name} 영업이익률`); } setAskCompanySearch(""); setAskCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white">기업 추가</button>
+              <div className="relative flex flex-wrap items-center gap-2 min-w-0 lg:w-1/2">
+                <span className="text-xs font-bold text-slate-500">기업 검색</span>
+                <input value={askCompanySearch} onChange={(e) => setAskCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && askCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) setAskCorpName(name); setAskCompanySearch(""); setAskCompanySuggestions([]); } }} placeholder="기업명 검색" className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs" />
+                <button type="button" onClick={async () => { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) { setAskCorpName(name); setAskQuery(`${name} 영업이익률`); } setAskCompanySearch(""); setAskCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white">기업 검색</button>
                 {askCompanySuggestions.length > 0 && <div className="absolute left-28 top-full z-30 mt-1 max-h-60 w-72 overflow-y-auto rounded-xl border bg-white p-1 shadow-xl">{askCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAskCorpName(name); setAskQuery(`${name} 영업이익률`); } setAskCompanySearch(""); setAskCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><strong>{item.name}</strong><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}
               </div>
+              </div>
+
+
 
               <div className="pt-2 flex flex-wrap items-center gap-2">
                 <span className="text-xs font-bold text-slate-500">질문 예시</span>
@@ -1840,12 +1759,10 @@ export default function Home() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h1 className="text-2xl font-extrabold text-slate-900">비교분석</h1>
-                <p className="text-sm text-slate-500 mt-0.5">
-                  기업을 검색해 등록·삭제하고, 비교 지표(2개~5개)를 선택해 공시값과 출처를 비교하세요.
-                </p>
+
               </div>
               <div className="flex items-center gap-2 print:hidden">
-                <button
+                <button disabled={isRefreshingCompare}
                   onClick={() =>
                     exportRowsToPrintablePdf("기업별_공시값_비교분석_보고서", compareExportRows)
                   }
@@ -1854,7 +1771,7 @@ export default function Home() {
                   <FileText className="w-3.5 h-3.5" />
                   PDF 다운로드
                 </button>
-                <button
+                <button disabled={isRefreshingCompare}
                   onClick={() =>
                     exportRowsToCsvExcel("기업별_공시값_비교분석.csv", compareExportRows)
                   }
@@ -1869,13 +1786,13 @@ export default function Home() {
             <div className="flex flex-wrap items-end gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-extrabold text-slate-700" htmlFor="compare-year-choice">① 비교 연도</label>
-                <select id="compare-year-choice" value={compareYear} onChange={(e) => setCompareYear(Number(e.target.value))} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">
-                  {Array.from({ length: new Date().getFullYear() - 1999 }, (_, i) => new Date().getFullYear() - i).map((year) => <option key={year} value={year}>{year}년</option>)}
+                <select id="compare-year-choice" value={compareYear} onChange={(e) => { setLiveCompareResults({}); setIsRefreshingCompare(true); setCompareYear(Number(e.target.value)); }} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">
+                  {Array.from({ length: new Date().getFullYear() - 2015 + 1 }, (_, i) => new Date().getFullYear() - i).map((year) => <option key={year} value={year}>{year}년</option>)}
                 </select>
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-extrabold text-slate-700" htmlFor="compare-period-choice">② 보고 기간</label>
-                <select id="compare-period-choice" value={comparePeriodChoice} onChange={(e) => setComparePeriodChoice(e.target.value as ComparePeriodChoice)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">
+                <select id="compare-period-choice" value={comparePeriodChoice} onChange={(e) => { setLiveCompareResults({}); setIsRefreshingCompare(true); setComparePeriodChoice(e.target.value as ComparePeriodChoice); }} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">
                   <option value="q1">1분기 (1~3월 누계)</option>
                   <option value="half">상반기 (1~6월 누계)</option>
                   <option value="q3">3분기 (1~9월 누계)</option>
@@ -1883,15 +1800,14 @@ export default function Home() {
                   <option value="annual">연간 (사업보고서)</option>
                 </select>
               </div>
-              <span className="max-w-2xl text-xs leading-relaxed text-slate-600">모든 기업을 같은 연도·기간으로 비교합니다. 하반기는 동일 회사·동일 연결/별도 기준의 연간 누계에서 상반기 누계를 차감합니다. 해당 공시가 없으면 추정하지 않고 자료 없음으로 표시합니다.</span>
-              <div className="basis-full flex items-center gap-2 text-xs text-slate-700"><span className={isRefreshingCompare ? "animate-pulse" : ""}>{isRefreshingCompare ? "조회 중…" : "조회 상태"}</span><span>{liveCompareStatus}</span></div>
+
             </div>
 
             {/* 1. 기업 검색 등록 및 삭제 */}
             <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-extrabold text-slate-900">
-                  1. 비교기업 선택 및 검색 등록 ({compareCorpNames.length}개 선택됨)
+                  1. 비교기업 선택 및 검색 등록 ({compareCorpNames.length}개 / 최대 10개 비교 가능)
                 </h2>
                 <div className="relative flex items-center gap-2">
                   <input
@@ -1903,28 +1819,28 @@ export default function Home() {
                         const target = compareSearchInput.trim();
                         const registeredName = await handleFetchOrRegisterCompany(target);
                         if (registeredName && !compareCorpNames.includes(registeredName)) {
-                          setCompareCorpNames((prev) => [...prev, registeredName]);
+                          setCompareCorpNames((prev) => [...new Set([...prev, registeredName])].slice(0,10));
                         }
                         setCompareSearchInput("");
                       }
                     }}
-                    placeholder="기업명 입력 후 등록"
+                    placeholder="기업명 검색"
                     className="px-3 py-1.5 border border-slate-300 rounded-xl text-xs w-60"
                   />
-                  {compareCompanySuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-64 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{compareCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name && !compareCorpNames.includes(name)) setCompareCorpNames((prev) => [...prev, name]); setCompareSearchInput(""); setCompareCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}
+                  {compareCompanySuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-64 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{compareCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name && !compareCorpNames.includes(name)) setCompareCorpNames((prev) => [...new Set([...prev, name])].slice(0,20).slice(0,10)); setCompareSearchInput(""); setCompareCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}
                   <button
                     onClick={async () => {
                       const target = compareSearchInput.trim();
                       if (!target) return;
                       const registeredName = await handleFetchOrRegisterCompany(target);
                       if (registeredName && !compareCorpNames.includes(registeredName)) {
-                        setCompareCorpNames((prev) => [...prev, registeredName]);
+                        setCompareCorpNames((prev) => [...new Set([...prev, registeredName])].slice(0,10));
                       }
                       setCompareSearchInput("");
                     }}
                     className="px-3.5 py-1.5 bg-[#0b3b2c] text-white rounded-xl text-xs font-bold inline-flex items-center gap-1"
                   >
-                    <Plus className="w-3.5 h-3.5" /> 기업 등록
+                    <Plus className="w-3.5 h-3.5" /> 기업 검색
                   </button>
                 </div>
               </div>
@@ -1950,7 +1866,7 @@ export default function Home() {
                               );
                             }
                           } else {
-                            setCompareCorpNames((prev) => [...prev, c.corpName]);
+                            setCompareCorpNames((prev) => [...new Set([...prev, c.corpName])].slice(0,10));
                           }
                         }}
                         className="px-3 py-1.5"
@@ -2011,9 +1927,9 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 3. 공시값 비교 테이블 (기업 | 선택한 지표들(최대 5개) 값 | 출처) */}
+            {/* 3. 결과값 비교 테이블 (기업 | 선택한 지표들(최대 5개) 값 | 출처) */}
             <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
-              <h2 className="text-lg font-extrabold text-slate-900">공시값 비교</h2>
+              <h2 className="text-lg font-extrabold text-slate-900">결과값 비교</h2>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm border-collapse border border-slate-200">
                   <thead>
@@ -2053,20 +1969,19 @@ export default function Home() {
                             const serverRow = (liveCompareResults[mId] ?? []).find((row) => row.company === comp.corpName);
                             const hasValue = Boolean(serverRow?.found && serverRow.value !== null && Number.isFinite(serverRow.value));
                             return (
-                              <td key={mId} title="실시간 공시 기준 조회 결과" className="border border-slate-200 px-3 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
-                                <div>{hasValue ? formatMetricValue(serverRow!.value as number, mDef.unit) : "자료 없음"}</div>
+                              <td key={mId} title={serverRow?.message || "실시간 공시 기준 조회 결과"} className="border border-slate-200 px-3 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
+                                <div>{hasValue ? formatMetricValue(serverRow!.value as number, mDef.unit) : !serverRow && isRefreshingCompare ? "조회 중…" : "확인 필요"}</div>
+                                {hasValue && <div className="mt-1 text-[10px] font-normal text-emerald-700">{serverRow?.source || "DART"}</div>}
+                                {!hasValue && <div className="mt-1 max-w-[220px] whitespace-normal text-[10px] font-normal leading-relaxed text-amber-700">{serverRow?.message || (isRefreshingCompare ? "조회 중입니다." : "조회 결과를 확인하지 못했습니다. 새로고침해 주세요.")}</div>}
                               </td>
                             );
                           })}
                           <td className="border border-slate-200 px-2 py-2 text-[10px] whitespace-nowrap min-w-[190px]">
-                            {(() => {
-                              const sourceEntry = compareMetricIds.map((metricId) => ({
-                                metricId,
-                                row: (liveCompareResults[metricId] ?? []).find((row) => row.company === comp.corpName),
-                              })).find((entry) => entry.row?.rceptNo && /^\d{14}$/.test(entry.row.rceptNo));
-                              if (!sourceEntry?.row?.rceptNo) return <span className="text-slate-400">원문 출처 미확인</span>;
-                              return <a href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${sourceEntry.row.rceptNo}`} target="_blank" rel="noreferrer" className="text-emerald-700 font-bold hover:underline">{sourceEntry.row.period} (#{sourceEntry.row.rceptNo}) · 공시 원문 ↗</a>;
-                            })()}
+                            {compareMetricIds.map(metricId=>{
+                              const row=(liveCompareResults[metricId]||[]).find(row=>row.company===comp.corpName);
+                              const links=metricSourceLinks(row?.citation,row?.rceptNo);
+                              return <div key={metricId} className="mb-2 whitespace-normal"><strong>{metricId}</strong><div className="text-slate-500">{row?.basis} · {row?.period}</div>{links.length ? links.map(link=><a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="mr-2 text-emerald-700 underline">{link.label} ↗</a>) : <span className="text-slate-400">출처 미확인</span>}</div>;
+                            })}
                           </td>
                         </tr>
                       );
@@ -2081,15 +1996,16 @@ export default function Home() {
         {/* ====================================================================
             [탭 5] 요약 보고서 (첫 질문에서 요청하신 첨부 이미지 image_c888de.jpg 3단 차트 + 수치 검증 통합)
            ==================================================================== */}
-        {activeTab === "ADVANCED" && <AdvancedAnalysisPanel company={currentCompany} companies={companies} selectedCompanyName={selectedCorpName} apiKey={apiKey} onSelectCompany={setSelectedCorpName} onRegisterCompany={handleFetchOrRegisterCompany} />}
+
 
 
         {activeTab === "ALERTS" && <section className="space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-extrabold">공시 알람</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 공시와 공시 목록을 화면 활성 시 15초 간격으로 확인하고, 화면 복귀 시 즉시 조회합니다. 백그라운드에서는 60초 간격이며 DART API 반영 시점에 따라 수신 시간이 달라집니다. 브라우저가 열려 있는 동안 동작합니다.</p></div><div className="flex gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div></div>
-          <div className="rounded-2xl border bg-white p-4 space-y-3"><div className="text-sm font-extrabold">관심기업 추가·삭제</div><div className="relative flex flex-wrap gap-2"><input value={alertCompanySearch} onChange={(e) => setAlertCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && alertCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])]); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); } }} placeholder="DART 상장기업 검색·등록" className="min-w-[220px] flex-1 rounded-lg border px-3 py-2 text-sm"/><button type="button" disabled={!alertCompanySearch.trim() || isRefreshingApi} onClick={async () => { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])]); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">검색 기업 등록·추가</button>{alertCompanySuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-60 w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{alertCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])]); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}</div><div className="flex flex-wrap gap-2">{alertCompanyNames.map((name) => <span key={name} className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{name}<button type="button" title={`${name} 관심기업에서 삭제`} onClick={() => setAlertCompanyNames((prev) => prev.filter((item) => item !== name))} className="text-slate-500 hover:text-rose-600"><X className="h-3.5 w-3.5" /></button></span>)}{!alertCompanyNames.length && <span className="text-xs text-slate-500">관심기업이 없습니다. 위에서 기업을 검색하거나 선택하세요.</span>}</div><div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600"><div>상태: {alertStatus}</div><div className="mt-1">마지막 성공 조회: {lastAlertCheck || "아직 없음"}</div></div></div>
-          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-extrabold text-slate-900">{alertDisplayCompany.corpName} 공시 현황</h2><p className="mt-1 text-xs text-slate-500">최근 6개월 접수 공시 · 최신순</p></div><div className="flex flex-wrap items-center gap-2"><label htmlFor="alert-view-company" className="text-xs font-semibold text-slate-600">기업 선택</label><select id="alert-view-company" aria-label="공시 현황 기업 선택" value={alertDisplayCompany.corpName} onChange={(e) => setAlertViewCompanyName(e.target.value)} className="max-w-[220px] rounded-lg border px-3 py-2 text-xs font-semibold">{companies.map((item) => <option key={item.corpName} value={item.corpName}>{item.corpName}</option>)}</select><button type="button" onClick={() => setCompanyFilingsRefreshNonce((n) => n + 1)} disabled={isLoadingCurrentFilings} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">{isLoadingCurrentFilings ? "조회 중…" : "새로고침"}</button></div></div>{currentCompanyFilings.length ? <div className="divide-y divide-slate-100">{currentCompanyFilings.slice(0, 20).map((filing) => <a key={filing.rceptNo} href={filing.url} target="_blank" rel="noreferrer" className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-emerald-50/50"><span className="w-[82px] text-xs tabular-nums text-slate-500">{filing.receiptDate.slice(0,4)}.{filing.receiptDate.slice(4,6)}.{filing.receiptDate.slice(6,8)}</span><span className="min-w-0 flex-1 text-sm font-semibold text-slate-800">{filing.reportName}</span><ExternalLink className="h-3.5 w-3.5 text-emerald-700" /></a>)}</div> : <div className="p-5 text-sm text-slate-500">{isLoadingCurrentFilings ? "DART 공시목록을 조회하고 있습니다…" : currentFilingsMessage}</div>}<p className="border-t border-slate-100 p-3 text-[11px] text-slate-500">{currentFilingsMessage} · 화면 활성 시 15초 간격 자동 확인</p></section>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-extrabold">공시 알람 및 최근 공시 현황</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.</p></div><div className="ml-auto flex shrink-0 gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div></div>
+          <div className="rounded-2xl border bg-white p-4 space-y-3"><div className="text-sm font-extrabold">관심기업 추가·삭제 (최대 20개)</div><div className="relative flex flex-wrap gap-2"><input value={alertCompanySearch} onChange={(e) => setAlertCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && alertCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); } }} placeholder="기업명 검색" className="min-w-[220px] flex-1 rounded-lg border px-3 py-2 text-sm"/><button type="button" disabled={!alertCompanySearch.trim() || isRefreshingApi} onClick={async () => { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">기업 등록하기</button>{alertCompanySuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-60 w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{alertCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}</div><div className="flex flex-wrap gap-2">{alertCompanyNames.map((name) => <span key={name} className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{name}<button type="button" title={`${name} 관심기업에서 삭제`} onClick={() => setAlertCompanyNames((prev) => prev.filter((item) => item !== name))} className="text-slate-500 hover:text-rose-600"><X className="h-3.5 w-3.5" /></button></span>)}{!alertCompanyNames.length && <span className="text-xs text-slate-500">관심기업이 없습니다. 위에서 기업을 검색하거나 선택하세요.</span>}</div><div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600"><div>상태: {alertStatus}</div><div className="mt-1">마지막 성공 조회: {lastAlertCheck || "아직 없음"}</div></div></div>
+          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-extrabold text-slate-900">{alertDisplayCompany.corpName} 공시 현황</h2><p className="mt-1 text-xs text-slate-500">최근 6개월 접수 공시 · 최신순</p></div><div className="flex flex-wrap items-center gap-2"><label htmlFor="alert-view-company" className="text-xs font-semibold text-slate-600">기업 선택</label><select id="alert-view-company" aria-label="공시 현황 기업 선택" value={alertDisplayCompany.corpName} onChange={(e) => setAlertViewCompanyName(e.target.value)} className="max-w-[220px] rounded-lg border px-3 py-2 text-xs font-semibold">{companies.map((item) => <option key={item.corpName} value={item.corpName}>{item.corpName}</option>)}</select><button type="button" onClick={() => setCompanyFilingsRefreshNonce((n) => n + 1)} disabled={isLoadingCurrentFilings} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">{isLoadingCurrentFilings ? "조회 중…" : "새로고침"}</button></div></div>{displayedCompanyFilings.length ? <div className="divide-y divide-slate-100">{displayedCompanyFilings.slice(0, 20).map((filing) => <a key={filing.rceptNo} href={filing.url} target="_blank" rel="noreferrer" className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-emerald-50/50"><span className="w-[82px] text-xs tabular-nums text-slate-500">{filing.receiptDate.slice(0,4)}.{filing.receiptDate.slice(4,6)}.{filing.receiptDate.slice(6,8)}</span><span className="min-w-0 flex-1 text-sm font-semibold text-slate-800">{filing.reportName}</span><ExternalLink className="h-3.5 w-3.5 text-emerald-700" /></a>)}</div> : <div className="p-5 text-sm text-slate-500">{isLoadingCurrentFilings ? "DART 공시목록을 조회하고 있습니다…" : currentFilingsMessage}</div>}<p className="border-t border-slate-100 p-3 text-[11px] text-slate-500">{currentFilingsMessage} · 화면 활성 시 15초 간격 자동 확인</p></section>
         </section>}
 
+        {activeTab === "ONE_PAGER" && <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3 text-xs"><label>분기 조회 시작 연도 <select value={historyStartYear} onChange={e=>{setHistoryStartYear(Number(e.target.value));setHistoryEndYear(end=>Math.max(end,Number(e.target.value)));setHistoryLoadAttemptedFor("");}}>{Array.from({length:new Date().getFullYear()-2014},(_,i)=>2015+i).map(y=><option key={y}>{y}</option>)}</select></label><label>종료 연도 <select value={historyEndYear} onChange={e=>{setHistoryEndYear(Number(e.target.value));setHistoryLoadAttemptedFor("");}}>{Array.from({length:new Date().getFullYear()-historyStartYear+1},(_,i)=>historyStartYear+i).map(y=><option key={y}>{y}</option>)}</select></label><span role="status">{historyLoadMessage || "최근 3개년 기본 조회 · 2015년부터 선택 가능"}</span></div>}
         {activeTab === "ONE_PAGER" && (
           <div className="bg-[#faf9f5] text-stone-900 border border-stone-300 rounded-2xl p-6 md:p-8 space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-300 pb-4 print:hidden">
@@ -2102,7 +2018,7 @@ export default function Home() {
               <div className="flex items-center gap-2">
                 <select
                   value={selectedCorpName}
-                  onChange={(e) => setSelectedCorpName(e.target.value)}
+                  onChange={(e) => { setSelectedCorpName(e.target.value); setApiStatusMessage(""); }}
                   className="px-3 py-1.5 border border-stone-300 rounded-lg text-xs font-bold bg-white"
                 >
                   {companies.map((c) => (
@@ -2122,7 +2038,7 @@ export default function Home() {
             </div>
 
             <div className="rounded-lg border border-stone-300 bg-white/70 px-3 py-2 text-xs text-stone-600">
-              <span className="font-bold text-stone-800">최신 확인 공시:</span> {currentCompany.reportName || currentCompany.period || "DART 정기보고서"} · {currentCompany.period || "기간 미확인"} · {currentCompany.basisCode === "OFS" ? "별도 기준" : "연결 기준"}
+              <span className="font-bold text-stone-800">최신 확인 공시:</span> {currentCompany.reportName || currentCompany.period || "DART 정기보고서"} · {currentCompany.basisCode === "OFS" ? "별도 기준" : "연결 기준"}
               {/^\d{14}$/.test(currentCompany.rceptNo || "") && <> · <a className="font-bold text-emerald-800 underline" href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${currentCompany.rceptNo}`} target="_blank" rel="noreferrer">공시 원문 확인 ↗</a></>}
             </div>
             <h2 className="text-lg md:text-xl font-bold text-stone-900">
@@ -2134,7 +2050,7 @@ export default function Home() {
               const revenue = officialMetricValue("revenue");
               const op = officialMetricValue("operatingProfit");
               const net = officialMetricValue("netIncome");
-              const margin = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(op) ? op / revenue * 100 : Number.NaN;
+              const margin = officialMetricValueForDisplay("operatingMargin");
               const debtRatio = officialMetricValue("debtRatio");
               const currentRatio = officialMetricValue("currentRatio");
               const coverage = officialMetricValue("interestCoverage");
@@ -2270,7 +2186,7 @@ export default function Home() {
             </div>
           </div>
         )}
-        {showFilingAlertPopup && filingAlerts.length > 0 && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 print:hidden"><div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-extrabold text-slate-900">새로운 DART 공시가 등록됐습니다</h2><p className="mt-1 text-xs text-slate-500">등록한 기업의 신규 접수번호를 확인했습니다.</p></div><button type="button" onClick={() => setShowFilingAlertPopup(false)} className="rounded-lg p-1 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button></div><div className="mt-4 max-h-72 space-y-2 overflow-y-auto">{filingAlerts.slice(0, 8).map((item) => <a key={item.rceptNo} onClick={() => setReadFilingAlertIds((previous) => new Set([...previous, item.rceptNo]))} href={item.url} target="_blank" rel="noreferrer" className="block rounded-xl border border-slate-200 p-3 hover:bg-emerald-50"><div className="text-xs text-slate-500">{item.company} · {item.receiptDate}</div><div className="mt-1 text-sm font-bold text-slate-900">{item.reportName}</div><div className="mt-1 text-[11px] text-emerald-700">DART 공시 열기 ↗</div></a>)}</div><div className="mt-4 flex justify-end"><button type="button" onClick={() => { markFilingAlertsRead(); setShowFilingAlertPopup(false); }} className="rounded-xl bg-emerald-800 px-4 py-2 text-sm font-bold text-white">확인</button></div></div></div>}
+        {showFilingAlertPopup && filingAlerts.length > 0 && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 print:hidden"><div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-extrabold text-slate-900">새로운 DART 공시가 등록됐습니다</h2><p className="mt-1 text-xs text-slate-500">등록한 기업의 신규 접수번호를 확인했습니다.</p></div><button type="button" onClick={() => setShowFilingAlertPopup(false)} className="rounded-lg p-1 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button></div><div className="mt-4 max-h-72 space-y-2 overflow-y-auto">{filingAlerts.slice(0, 10).map((item) => <a key={item.rceptNo} onClick={() => setReadFilingAlertIds((previous) => new Set([...previous, item.rceptNo]))} href={item.url} target="_blank" rel="noreferrer" className="block rounded-xl border border-slate-200 p-3 hover:bg-emerald-50"><div className="text-xs text-slate-500">{item.company} · {item.receiptDate}</div><div className="mt-1 text-sm font-bold text-slate-900">{item.reportName}</div><div className="mt-1 text-[11px] text-emerald-700">DART 공시 열기 ↗</div></a>)}</div><div className="mt-4 flex justify-end"><button type="button" onClick={() => { markFilingAlertsRead(); setShowFilingAlertPopup(false); }} className="rounded-xl bg-emerald-800 px-4 py-2 text-sm font-bold text-white">확인</button></div></div></div>}
       </main>
       
 
