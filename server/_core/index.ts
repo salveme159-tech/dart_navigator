@@ -7,7 +7,7 @@ import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { timingSafeEqual } from "node:crypto";
+import { registerUserAgentRoutes } from "./userAgent";
 import { askDart } from "../dart/client";
 
 async function startServer() {
@@ -34,6 +34,8 @@ async function startServer() {
     if (req.method === "OPTIONS") return res.status(204).end();
     next();
   });
+  // Live disclosure responses must not be retained by browser or intermediary caches.
+  app.use("/api/trpc", (_req, res, next) => { res.set("Cache-Control", "private, no-store, max-age=0"); res.set("Pragma", "no-cache"); next(); });
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -129,38 +131,7 @@ async function startServer() {
     }
   });
 
-  // Stable REST surface for a ChatGPT GPT Action. It uses the server's OpenDART key,
-  // never accepts an OpenDART key in the request body, and requires its own bearer secret.
-  app.post("/api/agent/query", async (req, res) => {
-    const expected = (process.env.AGENT_API_KEY ?? "").trim();
-    if (expected.length < 32) {
-      return res.status(503).json({ found: false, message: "Agent API가 설정되지 않았습니다. 32자 이상의 무작위 AGENT_API_KEY를 서버 환경변수에 설정하세요." });
-    }
-    const authorization = req.header("authorization") ?? "";
-    const supplied = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? "";
-    const expectedBytes = Buffer.from(expected);
-    const suppliedBytes = Buffer.from(supplied);
-    const authorized = expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
-    if (!authorized) {
-      return res.status(401).json({ found: false, message: "인증되지 않은 Agent API 요청입니다." });
-    }
-
-    const question = req.body?.question;
-    if (typeof question !== "string" || question.trim().length < 2 || question.trim().length > 300) {
-      return res.status(400).json({ found: false, message: "question은 2~300자 문자열이어야 합니다." });
-    }
-
-    if (!/^[A-Za-z0-9]{40}$/.test((process.env.OPENDART_API_KEY ?? "").trim())) {
-      return res.status(503).json({ found: false, message: "Agent API 조회용 서버 환경변수 OPENDART_API_KEY가 올바르게 설정되지 않았습니다." });
-    }
-
-    try {
-      return res.json(await askDart(question.trim(), process.env.OPENDART_API_KEY?.trim()));
-    } catch (error) {
-      console.error("[Agent API] OpenDART query failed:", error);
-      return res.status(502).json({ found: false, message: "OpenDART 조회 중 오류가 발생했습니다. API 키, 서버 연결, 기업·보고기간을 확인하세요." });
-    }
-  });
+  registerUserAgentRoutes(app, askDart);
 
   app.get("/api/platform/config.js", (_req, res) => {
     res.set("Cache-Control", "no-store").type("application/javascript").send(publicPlatformScript());
