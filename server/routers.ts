@@ -3,12 +3,13 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
-import { askDart, buildDartSectionDeepLink, clearDartCaches, compareDart, historyDart, searchDartCompanies, snapshotDart, validateDartKey, recentFilingsDart } from "./dart/client";
+import { askDart, buildDartSectionDeepLink, clearDartCaches, compareDart, historyDart, searchDartCompanies, snapshotDart, validateDartKey, recentFilingsDart, type ComparisonMetric } from "./dart/client";
+import { EXTRA_COMPARISON_METRIC_IDS } from "@shared/comparisonMetrics";
 import { METRIC_LABELS, type FinancialMetric, type Kind } from "./dart/engine";
 import { COOKIE_NAME } from "@shared/const";
 
-const metricEnum = z.enum(["revenue", "operatingProfit", "netIncome", "operatingMargin", "netMargin", "operatingCashFlow", "investmentCashFlow", "financingCashFlow", "capex", "freeCashFlow", "netDebt", "borrowings", "borrowingsRatio", "workingCapital", "payables", "debtRatio", "currentRatio", "interestCoverage", "roe", "roa", "eps", "ebitda", "per", "pbr"] satisfies [FinancialMetric, ...FinancialMetric[]]);
-const periodEnum = z.enum(["latest", "annual", "half", "q1", "q3", "h2"] satisfies [Kind | "latest" | "h2", ...(Kind | "latest" | "h2")[]]);
+const metricEnum = z.enum([...Object.keys(METRIC_LABELS), ...EXTRA_COMPARISON_METRIC_IDS] as [ComparisonMetric, ...ComparisonMetric[]]);
+const periodEnum = z.enum(["latest", "annual", "half", "q1", "q3"] satisfies [Kind | "latest", ...(Kind | "latest")[]]);
 
 // In production, never let anonymous public tRPC calls consume a server-owned DART key.
 // Browser callers must send their own 40-character key; GPT Actions use /api/agent/query.
