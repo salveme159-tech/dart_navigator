@@ -98,8 +98,8 @@ describe("기간·기본기업", () => {
     const [p] = periodCandidates("대한전선 2026년 상반기 연결 기준 매출액", now);
     expect([p.year, p.code, p.mode]).toEqual([2026, "11012", "cum"]);
   });
-  it("기간 미지정 → 공개 시점에 맞는 최신 보고기간부터 시도, 과거 연도 명시 → 사업보고서", () => {
-    expect(periodCandidates("매출액", now).map((p) => p.code)).toEqual(["11012", "11013", "11011"]);
+  it("기간 미지정 → 실제 목록 미확인 시 분기 종료 후보부터 시도, 과거 연도 명시 → 사업보고서", () => {
+    expect(periodCandidates("매출액", now).map((p) => p.code)).toEqual(["11014", "11012", "11013", "11011"]);
     expect(periodCandidates("2025년 매출액", now)[0].code).toBe("11011");
   });
   it("누적 금액과 기업명 판별", () => {
@@ -200,7 +200,7 @@ describe("자연어 질의 회귀 테스트", () => {
 
   it("올해와 작년을 같이 물으면 올해 최신 보고기간 후보부터 찾는다", () => {
     expect(periodCandidates("대한전선 올해 매출이 작년보다 왜 늘었어?", now).map((p) => [p.year, p.kind])).toEqual([
-      [2026, "half"], [2026, "q1"], [2025, "annual"],
+      [2026, "q3"], [2026, "half"], [2026, "q1"], [2025, "annual"],
     ]);
   });
 
@@ -517,7 +517,7 @@ describe("최근 화면 오류 회귀 테스트", () => {
   });
 
   it("자산총계 계정명을 찾지 못해도 부채총계+자본총계로 차입금의존도 분모를 보완한다", () => {
-    const rows: Row[] = [bs("단기차입금", 100), bs("총부채", 700), bs("총자본", 300)];
+    const rows: Row[] = [bs("총차입금", 100), bs("총부채", 700), bs("총자본", 300)];
     const result = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
     expect(result?.value).toBeCloseTo(10, 6);
     expect(result?.lines.join(" ")).toContain("자산총계 대체 산식");
@@ -640,13 +640,14 @@ describe("최근 화면 오류 회귀 테스트", () => {
     expect(result?.lines?.join(" ")).toContain("중복 합산");
   });
 
-  it("일부 차입금 계정만 있어도 확인된 숫자로 합산하고 미확인 계정은 제외 안내한다", () => {
+  it("일부 차입금 계정만 있으면 부분합을 총액이나 의존도로 사용하지 않는다", () => {
     const rows: Row[] = [bs("장기차입금", 200), bs("사채", 50), bs("자산총계", 1000)];
     const total = pickMetric(rows, P(2025, "annual"), "borrowings");
     const ratio = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
-    expect(total?.value).toBe(250);
-    expect(ratio?.value).toBe(25);
-    expect(total?.disclaimer).toContain("제외");
+    expect(Number.isFinite(total?.value)).toBe(false);
+    expect(Number.isFinite(ratio?.value)).toBe(false);
+    expect(total?.partialValue).toBe(250);
+    expect(total?.disclaimer).toContain("부분합");
     expect(total?.disclaimer).toContain("단기차입금");
   });
 

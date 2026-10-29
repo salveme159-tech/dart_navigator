@@ -196,7 +196,7 @@ function leaseValuesFromRows(rows: TableRow[], period: Period, basis: "CFS" | "O
   const current = findLease(/^(?:유동리스부채|유동성리스부채|리스부채\(유동\)|유동성리스부채합계)$/);
   const noncurrent = findLease(/^(?:비유동리스부채|장기리스부채|리스부채\(비유동\)|비유동리스부채합계)$/);
   const generic = !current && !noncurrent ? findLease(/^리스부채(?:합계|총계)?$/) : null;
-  const total = current || noncurrent ? (current?.value ?? 0) + (noncurrent?.value ?? 0) : generic?.value ?? null;
+  const total = current || noncurrent ? (current && noncurrent ? current.value + noncurrent.value : null) : generic?.value ?? null;
   return { current, noncurrent, total, url };
 }
 

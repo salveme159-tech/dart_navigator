@@ -2,11 +2,10 @@
 
 ## 먼저 읽어 주세요
 
-- 웹앱/API/GPT 설정 전체 소스: `DART-FINDER-Full-20261029.zip`
-- 최신 통합 변경·검증 범위: `00_DART_FINDER_CHANGES_KO.md`
-- 화면·운영 설정별 상세 안내: 이 문서와 `01_CHANGES_AND_VALIDATION_KO.md`
-
-GPT 설정 파일은 전체 소스의 `GPT_AGENT_SETUP` 폴더에 함께 포함되어 있습니다.
+- 웹앱/API 전체 소스: `DART-FINDER-Webapp-Full-20261029.zip`
+- GPT 설정 파일: `DART-FINDER-Agent-Final-20261029.zip`
+- 변경 파일만 필요한 경우: `DART-FINDER-Update-Patch-20261029.zip`
+- 수정 근거와 18개 항목별 반영 내역: `01_CHANGES_AND_VALIDATION_KO.md`
 
 이번 수정은 Home.tsx만 바꾸는 작업이 아닙니다. `client`, `server`, `shared`, `scripts`, `.github`, `package.json`을 같은 저장소 경로에 함께 반영해야 합니다. 기사 팩트 체크는 제외된 상태이며, 손익 민감도 체크도 전체 삭제했습니다.
 
@@ -47,12 +46,12 @@ Render 무료 서버에서 이 기능까지 쓰려면 Redis REST 저장소(예: 
 
 ## 4. ChatGPT 에이전트 만들기
 
-아래 경로는 이번 전체 ZIP에 포함된 `GPT_AGENT_SETUP` 폴더를 기준으로 합니다.
+아래 `GPT_SETUP` 경로는 에이전트 ZIP 기준입니다. 웹앱 ZIP에는 같은 파일이 `GPT_AGENT_SETUP` 폴더에 들어 있습니다.
 
 1. GPT 만들기 → 구성(Configure) 선택
-2. 이름·설명은 `GPT_AGENT_SETUP/01_GPT_PROFILE_KO.txt` 참고
-3. 지침(Instructions)에 `GPT_AGENT_SETUP/02_GPT_INSTRUCTIONS_KO.txt` 전체 입력
-4. 새 작업 만들기 → 스키마에 `GPT_AGENT_SETUP/03_GPT_ACTION_OPENAPI.yaml` 전체 입력
+2. 이름·설명은 `GPT_SETUP/01_GPT_PROFILE_KO.txt` 참고
+3. 지침(Instructions)에 `GPT_SETUP/02_GPT_INSTRUCTIONS_KO.txt` 전체 입력
+4. 새 작업 만들기 → 스키마에 `GPT_SETUP/03_GPT_ACTION_OPENAPI.yaml` 전체 입력
 5. YAML의 `servers.url`과 지침의 연결창 주소를 실제 API 서버 주소에 맞춥니다. 현재 서버는 `https://dart-navigator-v69n.onrender.com`, 연결창은 `https://dart-navigator-v69n.onrender.com/agent-connect`입니다.
 6. 인증은 **없음(None)** 선택
 7. 테스트 후 공유 권한 설정 → GPT 링크 전달
@@ -97,7 +96,7 @@ Render 무료 서버에서 이 기능까지 쓰려면 Redis REST 저장소(예: 
 - 기준기업 → 조회 완료 안내 → 등록 종목 순서, 기업 검색과 최신 데이터 갱신 위치
 - 비교분석에서 기업 10개 한도 및 연도·기간 변경 시 즉시 이전 값 지우기
 - 가온전선 등 계정명 변형 기업, 연결·별도 빠른 전환, 2015년 분기 실제 조회
-- `/api/health`의 release가 `dart-finder-20261029-audit18-r2`인지 확인하고 commit을 Render의 배포 커밋과 대조
+- `/api/health`의 release가 `dart-finder-20261029-audit18`인지 확인하고 commit을 Render의 배포 커밋과 대조
 - `/agent-connect`가 404가 아닌지 확인, `/api/agent/health`의 status 확인
 - 연결코드 폐기는 저장소를 설정한 경우에만 시험
 - 다운로드 단위·출처와 미확인 공시를 실제 원문과 대조

@@ -93,10 +93,29 @@ function isCurrentHeader(value: string, period: Period): boolean {
   return /당분기말|당분기|당기말|당기|분기말/.test(compact) && !/반기/.test(compact);
 }
 
+/** Restrict note tables to the requested basis before reading any numeric column. */
+export function disclosureEntriesForBasis(entries: HtmlEntry[], basis?:"CFS"|"OFS"): HtmlEntry[] {
+  if(!basis)return entries;
+  const scoped:HtmlEntry[]=[];
+  for(const entry of entries){
+    const headings=[...entry.text.matchAll(/<(?:TITLE|h[1-6])\b[^>]*>([\s\S]*?)<\/(?:TITLE|h[1-6])>/gi)]
+      .map(match=>({index:match.index!,title:textOf(match[1]).replace(/\s/g,"")}))
+      .filter(h=>/^(?:[0-9IVX.()]+)?(?:연결|별도|개별)?재무제표(?:에대한)?(?:주석)?$/.test(h.title));
+    if(headings.length){
+      for(let i=0;i<headings.length;i++){
+        const scope=/연결/.test(headings[i].title)?"CFS":"OFS";
+        if(scope===basis)scoped.push({name:entry.name,text:entry.text.slice(headings[i].index,headings[i+1]?.index ?? entry.text.length)});
+      }
+    } else if((basis==="CFS" && /연결|consolidated/i.test(entry.name)) || (basis==="OFS" && /별도|separate/i.test(entry.name))) scoped.push(entry);
+    // Unknown basis is not evidence that a note matches the selected statement.
+  }
+  return scoped;
+}
+
 /** DART document.xml ZIP 안의 주석 표에서 당기말 유동·비유동 리스부채를 추출합니다. */
-export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period: Period): LeaseLiabilityNoteValue | null {
+export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period: Period, basis?:"CFS"|"OFS"): LeaseLiabilityNoteValue | null {
   const candidates: LeaseLiabilityNoteValue[] = [];
-  for (const entry of entries) {
+  for (const entry of disclosureEntriesForBasis(entries,basis)) {
     const tableMatches = [...entry.text.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)];
     for (const tableMatch of tableMatches) {
       const tableHtml = tableMatch[0];
@@ -238,7 +257,7 @@ function depreciationPeriodScore(header: string, period: Period): number {
 }
 
 /** DART 원문 주석 표에서 EBITDA에 필요한 감가상각·상각비를 기간·단위 확인 후 추출합니다. */
-export function parseDepreciationFromDisclosure(entries: HtmlEntry[], period: Period): DepreciationNoteValue | null {
+export function parseDepreciationFromDisclosure(entries: HtmlEntry[], period: Period, basis?:"CFS"|"OFS"): DepreciationNoteValue | null {
   const avoidPrior = /전기|전반기|전분기|전년도|전년|비교|기초/;
   const parseAmountForUnit = (raw: string, unit: string): number | null => {
     let valueText = textOf(raw).replace(/[\s,\u00a0]/g, "").replace(/−/g, "-");
@@ -257,7 +276,7 @@ export function parseDepreciationFromDisclosure(entries: HtmlEntry[], period: Pe
   const foundAggregates: Array<{ value: number; label: string; sourceFile: string }> = [];
   const foundPairs: Array<{ value: number; lines: string[]; sourceFile: string }> = [];
 
-  for (const entry of entries) {
+  for (const entry of disclosureEntriesForBasis(entries,basis)) {
     const tables = [...entry.text.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)];
     for (const tableMatch of tables) {
       const tableHtml = tableMatch[0];
