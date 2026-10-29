@@ -1,3 +1,7 @@
+> **2026.10.29 최신 수정본:** [DART FINDER 변경 및 검증 내역](00_DART_FINDER_CHANGES_KO.md)을 먼저 확인하세요. 아래 이전 기록과 다른 부분은 해당 문서가 우선합니다.
+
+> 최신 안내: [00_COMPARE_REFRESH_KO.md](00_COMPARE_REFRESH_KO.md) — 비교 기간 변경 시 이전 요청 취소·점진 표시 및 이전 지표 누락 보완 포함.
+
 > 2026-10-29 최신 ChatGPT 연동: [00_APPLY_AGENT_PERSISTENT_KO.md](00_APPLY_AGENT_PERSISTENT_KO.md)를 먼저 읽으세요. 과거 변경기록의 공용 AGENT_API_KEY 설명은 이전 방식입니다. 현재 설정은 GPT_AGENT_SETUP의 만료 없는 사용자별 연결코드 방식입니다.
 
 # Disclosure Navigator

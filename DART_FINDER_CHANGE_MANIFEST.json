@@ -1,0 +1,165 @@
+{
+  "release": "dart-finder-20261029-audit18-r2",
+  "basedOn": "DART-FINDER-Webapp-Full-20261029.zip (version 6)",
+  "modified": [
+    {
+      "path": ".github/workflows/deploy.yml",
+      "sha256": "065e3deab353d68e6abc079d8a7b3f8f633f1070df3c1be3cf183e57ef4fc363"
+    },
+    {
+      "path": ".github/workflows/validate.yml",
+      "sha256": "da5e62d3664433f7c41cc1eeb48054f7927e76446f610c6354f55a8cc89cddc1"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "5530b0dcfbeff3a04717120f933a33aecb32603c3d7c3761d1ba7c9810f2aa2d"
+    },
+    {
+      "path": "00_START_HERE_KO.md",
+      "sha256": "fc5c93faf228adda8cade78304531c19903bb6e2a60fbc54e0527497af9ec6f7"
+    },
+    {
+      "path": "01_CHANGES_AND_VALIDATION_KO.md",
+      "sha256": "d69ae8c1ccaabf13cebe98c082577b95cb42a1708f68f3ea092050aa31c30e22"
+    },
+    {
+      "path": "Dockerfile",
+      "sha256": "a4dfea3c4a21cc30995e06ce1ceba1e817214227e6327185ad9781f7cac3e5fa"
+    },
+    {
+      "path": "README.md",
+      "sha256": "87a7e8f7ac1b27ad7ea6650db0884ee68d085107c3c52ed4dd2624c60f1e9988"
+    },
+    {
+      "path": "RELEASE_MANIFEST.json",
+      "sha256": "12c1a68872b7e7adbdce3979d8f9af80bf48ebaef5c477deae14cf77c985366a"
+    },
+    {
+      "path": "VALIDATION_FINAL_20261029.json",
+      "sha256": "19c70171645b9defe18d2385e5ee915f205188971a000f6146a495da68107039"
+    },
+    {
+      "path": "client/index.html",
+      "sha256": "75ce0d9fb900596c73c3686fbda9b8db76a8240ed85f4039ca7ad2f3d7832c22"
+    },
+    {
+      "path": "client/src/components/LiveDartPanel.tsx",
+      "sha256": "7913704dd6b0d8d87d1d8483bb78b5d02fdf775491c24889b5ee631e3a4f02b9"
+    },
+    {
+      "path": "client/src/lib/realDartClient.ts",
+      "sha256": "cf60bd6861a9369b611d8059f72f4be1704e771099cedf1937f20a369f070e1d"
+    },
+    {
+      "path": "client/src/lib/xlsxExport.ts",
+      "sha256": "b82e937e983165774005838a448e610208201e30e3104f7dcdf99bce3c9b00a6"
+    },
+    {
+      "path": "client/src/pages/Home.tsx",
+      "sha256": "9744182898632d30c79864e02633c62d63ead41afc53fccdd01f119c3e4cd682"
+    },
+    {
+      "path": "package.json",
+      "sha256": "985da0e770e6acd79fe7eeeee0e98c69f76091815aad9a09d9df9169a54a2432"
+    },
+    {
+      "path": "render.yaml",
+      "sha256": "c93b8e0239fe25d87eef084cc7e71ae5fe1b232fd15accd2676ae1a31a4f409e"
+    },
+    {
+      "path": "scripts/test-compare-recovery.cjs",
+      "sha256": "2c3fa756b7d53ce3e733cde52911675d78aea0518b5e028a29df913bf0f07786"
+    },
+    {
+      "path": "scripts/test-statement-recovery.mjs",
+      "sha256": "6a24a867b45429168abb8a7e50a59bf8a16d19bd0d2e9fa80a0b72a1491a3e5c"
+    },
+    {
+      "path": "scripts/test-ui-contract.cjs",
+      "sha256": "f0a256ec15dc0d8af0fd1e9b9885a191c57f862856c201e418671ab1ca6d530f"
+    },
+    {
+      "path": "server/_core/index.ts",
+      "sha256": "30da29b8d7da1ddceef81da02d98ce16260bd585509d87a90df889fc46060562"
+    },
+    {
+      "path": "server/dart.test.ts",
+      "sha256": "4a9da410a2bb2e28c418c1c1366f85b0f8047b72f6c416e2de4dcdcb7af6e756"
+    },
+    {
+      "path": "server/dart/client.ts",
+      "sha256": "11a632fe0722b36120f65ff7e3bd5ce97f97704d54243d6e9b40ecce3851497e"
+    },
+    {
+      "path": "server/dart/disclosureNotes.ts",
+      "sha256": "853a6e0cf93ed4cc6665e90826cce7f7f684b77bb15c81e2f9d48143d9b5202e"
+    },
+    {
+      "path": "server/dart/engine.ts",
+      "sha256": "f08f46792f38f24e9dd2f13096ec6144ab120b07da29de1f66369c867f5cfbe7"
+    },
+    {
+      "path": "server/dart/statementRecovery.ts",
+      "sha256": "16c579b17e2f6d19fdc8d5745ed1f4506adbd0f25588c1a40936c667554893a9"
+    },
+    {
+      "path": "shared/dartAccounts.ts",
+      "sha256": "c2d17f21620b8b8da329a1d4e25589a0ce638b228dba8f9b820cf5689a61e195"
+    }
+  ],
+  "added": [
+    {
+      "path": "00_DART_FINDER_CHANGES_KO.md",
+      "sha256": "6c3ea6e894fd117ac18a6e6b740ac19b6af80d8f3672ca9bb15ea1d37ffb01b5"
+    },
+    {
+      "path": "client/src/lib/metricSources.ts",
+      "sha256": "203645d15a67b37c3ab9016b78946cb49686422fb890faf2e654e6dc211d1d8e"
+    },
+    {
+      "path": "scripts/test-financial-accuracy.mjs",
+      "sha256": "f9f6b4451bdba438da6fdb0eec7d37d5dcf5123945ea8f3d075ccc2fa79f72d6"
+    },
+    {
+      "path": "shared/financialAccounts.ts",
+      "sha256": "a1249ff9f7a2a99d219dbf4519dc77269125a29dd6d55242388b07d8033e94c2"
+    }
+  ],
+  "deletedFromVersion6": [],
+  "deleteWhenApplyingToEarlierVersions": [
+    "client/src/components/AdvancedAnalysisPanel.tsx"
+  ],
+  "verification": {
+    "nativeTests": {
+      "count": 87,
+      "passed": 87,
+      "failed": 0,
+      "framework": "node:test"
+    },
+    "existingEngineTests": {
+      "count": 78,
+      "passed": 78,
+      "runner": "TypeScript transpile + lightweight assertion adapter, not Vitest"
+    },
+    "uiTabs": {
+      "count": 5,
+      "runner": "controlled hook element-tree adapter, not browser"
+    },
+    "localImports": {
+      "sourceFilesScanned": 145,
+      "staticImports": 273,
+      "errors": 0
+    },
+    "lockfileManifestConsistent": true,
+    "productionBuildRun": false,
+    "fullTypecheckRun": false,
+    "liveDartRenderGptVerified": false,
+    "release": "dart-finder-20261029-audit18-r2",
+    "individualRevocationRequiresDurableStore": true,
+    "syntax": {
+      "codeFiles": 144,
+      "errors": 0
+    },
+    "browserTransportAndLatestRefresh": "passed using production functions with fixture HTTP; not live DART"
+  }
+}

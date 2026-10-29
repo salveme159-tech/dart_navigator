@@ -8,3 +8,11 @@ EXIM_EXCHANGE_API_KEY=발급받은_환율_API_인증키
 # Persistent connection encryption secret. Generate randomly once; keep unchanged across redeploys.
 # No AGENT_API_KEY is needed for GPT Actions. Do not commit the actual value.
 AGENT_CONNECTION_SECRET=
+
+# Optional durable per-code revocation store (HTTPS REST, not redis://).
+AGENT_REVOCATION_REDIS_URL=
+AGENT_REVOCATION_REDIS_TOKEN=
+# Alternative for ONE server with a persistent mounted disk; not free Render ephemeral storage.
+AGENT_REVOCATION_FILE=
+# Process-local DART request budget per key per Korea calendar day.
+DART_DAILY_REQUEST_BUDGET=18000

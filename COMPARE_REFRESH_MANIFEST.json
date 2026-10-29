@@ -1,0 +1,23 @@
+{
+  "modifiedSincePreviousRelease": [
+    "client/src/pages/Home.tsx",
+    "scripts/test-compare-recovery.cjs",
+    "server/dart/client.ts",
+    "server/routers.ts"
+  ],
+  "newSource": [
+    "client/src/lib/comparisonLoader.ts"
+  ],
+  "newTest": [
+    "scripts/test-comparison-loading.mjs"
+  ],
+  "requiredPatchSource": [
+    "client/src/pages/Home.tsx",
+    "client/src/lib/comparisonLoader.ts",
+    "server/routers.ts",
+    "server/dart/client.ts",
+    "server/dart/engine.ts",
+    "server/dart/statementRecovery.ts"
+  ],
+  "priorAgentFinancialRecoveryAndPollingPreserved": true
+}

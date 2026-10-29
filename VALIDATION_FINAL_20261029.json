@@ -1,0 +1,33 @@
+{
+  "nativeTests": {
+    "count": 87,
+    "passed": 87,
+    "failed": 0,
+    "framework": "node:test"
+  },
+  "existingEngineTests": {
+    "count": 78,
+    "passed": 78,
+    "runner": "TypeScript transpile + lightweight assertion adapter, not Vitest"
+  },
+  "uiTabs": {
+    "count": 5,
+    "runner": "controlled hook element-tree adapter, not browser"
+  },
+  "localImports": {
+    "sourceFilesScanned": 145,
+    "staticImports": 273,
+    "errors": 0
+  },
+  "lockfileManifestConsistent": true,
+  "productionBuildRun": false,
+  "fullTypecheckRun": false,
+  "liveDartRenderGptVerified": false,
+  "release": "dart-finder-20261029-audit18-r2",
+  "individualRevocationRequiresDurableStore": true,
+  "syntax": {
+    "codeFiles": 144,
+    "errors": 0
+  },
+  "browserTransportAndLatestRefresh": "passed using production functions with fixture HTTP; not live DART"
+}

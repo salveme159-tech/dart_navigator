@@ -1,0 +1,14 @@
+{
+  "modified": [
+    "client/src/pages/Home.tsx",
+    "server/dart/client.ts",
+    "server/dart/engine.ts"
+  ],
+  "added": [
+    "server/dart/statementRecovery.ts",
+    "scripts/test-statement-recovery.mjs",
+    "scripts/test-compare-recovery.cjs",
+    "00_METRIC_RECOVERY_KO.md"
+  ],
+  "priorAgentAndPollingFilesPreserved": true
+}

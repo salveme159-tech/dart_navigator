@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
-  title: Disclosure Navigator DART Agent API
-  version: 3.0.0
+  title: DART FINDER Agent API
+  version: 4.0.0
   description: DART lookup with a reusable, encrypted per-user connection code. No time expiry or shared GPT API
     key.
 servers:
 - url: https://dart-navigator-v69n.onrender.com
-  description: DART Navigator API. Change if the actual API host changes.
+  description: DART FINDER API. Change if the actual API host changes.
 security: []
 paths:
   /api/agent/query:

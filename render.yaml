@@ -14,3 +14,7 @@ services:
       # Keep this generated secret unchanged so user codes survive redeploys.
       - key: AGENT_CONNECTION_SECRET
         generateValue: true
+
+# 개별 연결코드 폐기를 재배포 후에도 유지하려면 AGENT_REVOCATION_FILE을
+# 영구 디스크의 경로로 설정해야 합니다. 무료 인스턴스의 임시 파일은 재배포 시 소실됩니다.
+# 이 파일은 디스크 추가나 유료 요금제 변경을 자동으로 수행하지 않습니다.

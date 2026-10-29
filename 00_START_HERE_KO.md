@@ -1,74 +1,105 @@
-# 처음 적용하는 순서 (2026-10-29)
+# DART FINDER 최종 적용 안내 — 2026-10-29
 
-## 두 ZIP의 용도
+## 먼저 읽어 주세요
 
-- DART-Navigator-Webapp-Persistent-20261029.zip: 웹앱과 API 서버 전체 소스입니다. GitHub dart_navigator 저장소에 이 ZIP의 **내용물**을 기존과 같은 경로로 덮어씁니다. ZIP명 폴더를 통째로 올리지 마세요. 이번 변경 때문에 기존 파일을 먼저 삭제할 필요는 없습니다. .github 폴더도 포함되어 있습니다.
-- DART-Agent-Persistent-20261029.zip: GPT 편집기에 넣는 지침과 Action 스키마, 적용 안내입니다. 이 ZIP 자체를 GitHub 소스로 올릴 필요는 없습니다.
+- 웹앱/API/GPT 설정 전체 소스: `DART-FINDER-Full-20261029.zip`
+- 최신 통합 변경·검증 범위: `00_DART_FINDER_CHANGES_KO.md`
+- 화면·운영 설정별 상세 안내: 이 문서와 `01_CHANGES_AND_VALIDATION_KO.md`
 
-## 1. 웹앱 전체 파일 적용
+GPT 설정 파일은 전체 소스의 `GPT_AGENT_SETUP` 폴더에 함께 포함되어 있습니다.
 
-웹앱 ZIP을 풀고 package.json이 보이는 위치의 파일·폴더를 GitHub 저장소의 같은 경로에 반영한 뒤 커밋합니다. Home.tsx만 바꾸는 작업이 아닙니다. 서버 코드와 새 userAgent.ts를 함께 적용해야 합니다. .env 파일이나 비밀값은 GitHub에 업로드하지 마세요. GitHub·Render에 이미 등록한 다른 환경변수는 유지하세요.
+이번 수정은 Home.tsx만 바꾸는 작업이 아닙니다. `client`, `server`, `shared`, `scripts`, `.github`, `package.json`을 같은 저장소 경로에 함께 반영해야 합니다. 기사 팩트 체크는 제외된 상태이며, 손익 민감도 체크도 전체 삭제했습니다.
 
-이번 코드 변경: server/_core/index.ts(Agent 경로 연결), server/_core/userAgent.ts(만료 없는 암호화 연결), scripts/test-agent-user-key.mjs(검증). .env.example/env.example/render.yaml와 에이전트 설정 안내도 새 방식으로 갱신했습니다. 기존 client 전체·재무 계산·공시 조회·알람 코드·패키지와 잠금파일은 유지했습니다. 기사 팩트 체크는 제외된 상태입니다.
+## 1. GitHub에 전체 파일 적용
 
-## 2. Render에 암호화용 비밀값을 처음 한 번 설정
+1. 웹앱 전체 ZIP을 내 PC의 새 폴더에 풉니다.
+2. 압축을 풀면 `package.json`, `client`, `server`, `shared`, `scripts`, `.github`가 바로 보입니다.
+3. GitHub `salveme159-tech/dart_navigator`의 루트에 이 내용물을 **같은 경로로** 반영합니다. ZIP 이름의 상위 폴더를 새로 만들어 넣지 마세요.
+4. 반드시 `DELETE_FILES.txt`에 적힌 기존 파일을 저장소에서 삭제합니다. 업로드 덮어쓰기는 파일 삭제를 처리하지 않습니다. 이번 삭제 대상은 `client/src/components/AdvancedAnalysisPanel.tsx`입니다.
+5. `.github`가 숨김 폴더라서 업로드에서 빠지지 않았는지 확인하고 커밋합니다. ZIP 자체를 올리는 방식으로는 앱 소스가 바뀌지 않습니다.
+6. Render → 기존 서비스 → 배포의 Source 커밋이 방금 올린 커밋인지 확인합니다. 필요하면 Manual Deploy → Deploy latest commit을 선택합니다.
+7. GitHub Pages도 쓰면 Actions 배포 성공을 확인합니다. GitHub Pages용 `VITE_API_BASE_URL` 값은 실제 API 서버 주소이며, 현재 주소는 `https://dart-navigator-v69n.onrender.com`입니다. 변수 변경 후에는 Pages를 다시 빌드해야 합니다.
 
-Render → 해당 서비스 → Environment → Add Environment Variable:
+GitHub·Render의 기존 환경변수는 유지하세요. `.env` 파일, 실제 인증키, 연결코드, 암호화 비밀값은 저장소에 올리지 않습니다. 이 전달본에는 개인 키를 포함하지 않았습니다.
 
-- Key: AGENT_CONNECTION_SECRET
-- Value: 무작위 영문·숫자 64자리 권장(최소 32자).
+## 2. 기본 에이전트 연결 설정 — 이전과 동일
 
-동봉된 01_GENERATE_SERVER_SECRET.ps1의 명령을 본인 PC의 PowerShell에서 실행하면 무작위 값이 나옵니다. 비밀번호 관리자의 무작위 생성 기능을 사용해도 됩니다. 1만 반복하거나 예시 문구를 값으로 넣지 마세요.
+- Render → 서비스 → Environment에 `AGENT_CONNECTION_SECRET`을 설정합니다. 무작위 값 최소 32자, 64자리 권장입니다.
+- 이미 설정했다면 **같은 값을 유지**합니다. 변경하면 기존 연결코드를 읽을 수 없습니다.
+- ZIP의 `01_GENERATE_SERVER_SECRET.ps1`을 PC의 PowerShell에서 실행하면 값을 만들 수 있습니다.
+- GPT Actions 인증은 **없음(None)**입니다. `AGENT_API_KEY`를 입력하지 않습니다.
+- 사용자는 본인 DART 인증키를 사용합니다. 에이전트용으로 운영자의 `OPENDART_API_KEY`를 설정할 필요가 없습니다.
 
-이 값은 사용자에게 요구하는 AGENT_API_KEY가 아닙니다. 서버가 연결코드를 암호화하고 나중에 읽기 위해 필요한 관리자용 비밀값입니다. **재배포할 때도 같은 값을 유지**하세요. GitHub·GPT 지침·스키마·사용자 대화에는 넣지 않습니다. 서버에 고정된 암호화 비밀값 없이 무료 Render의 메모리만 사용하면 재시작 후 코드를 유지할 수 없어서 추가한 설정입니다. DB·유료 디스크는 필요하지 않습니다.
+## 3. 선택 설정: 연결코드 하나만 영구 폐기하기
 
-Save and deploy 후 최신 GitHub 커밋이 배포됐는지 확인합니다. 필요하면 Manual Deploy → Deploy latest commit을 사용합니다. 기존 AGENT_API_KEY는 이 에이전트에서 더 이상 읽지 않습니다. 운영자의 OPENDART_API_KEY도 이 에이전트에는 필요 없습니다. 다른 용도로 쓰는 환경변수는 삭제하지 마세요.
+만료 없는 코드의 발급·사용은 위 설정만으로 가능합니다. **개별 코드의 폐기 기록을 재배포 후에도 유지하는 기능은 영구 저장소가 있어야 합니다.** 저장소가 없으면 화면에서 폐기 성공이라고 표시하지 않고 설정 필요 오류를 반환합니다.
 
-새 Render 서비스를 Blueprint로 만들면 render.yaml의 generateValue 설정으로 비밀값이 자동 생성됩니다. 기존 서비스에 ZIP만 올리는 경우에는 위 환경변수를 직접 추가해야 합니다.
+Render 무료 서버에서 이 기능까지 쓰려면 Redis REST 저장소(예: Upstash에서 발급받은 Redis REST 접속 정보)를 준비하고, Render Environment에 다음 두 항목을 추가합니다.
 
-## 3. GPT 설정 교체
+- `AGENT_REVOCATION_REDIS_URL`: 발급받은 HTTPS REST URL
+- `AGENT_REVOCATION_REDIS_TOKEN`: 해당 저장소의 REST 토큰
 
-GPT_SETUP/01_GPT_PROFILE_KO.txt → 이름·설명·대화 시작 문구
-GPT_SETUP/02_GPT_INSTRUCTIONS_KO.txt → 지침 전체 교체
-GPT_SETUP/03_GPT_ACTION_OPENAPI.yaml → 기존 Action 스키마 전체 교체
-Authentication → None(인증 없음). 예전 API Key/Bearer 설정은 제거합니다.
+일반 Redis의 `redis://` URL을 입력하는 자리가 아닙니다. 실제 접속값은 GitHub·GPT 지침에 넣지 않습니다. 저장소의 요금/무료 한도는 제공업체에서 확인하세요. 위 두 값을 같은 저장소에 계속 연결해 두어야 폐기 기록이 유지됩니다.
 
-설정 파일에는 실제 인증키나 연결코드를 넣지 않습니다. 서버 주소가 달라지면 스키마 servers.url과 지침의 연결창 링크를 함께 변경하세요. 현재 주소는 https://dart-navigator-v69n.onrender.com 입니다.
+지속 디스크가 있는 단일 서버라면 Redis 대신 `AGENT_REVOCATION_FILE=/영구마운트경로/revoked.json`을 사용할 수도 있습니다. **Render 무료 서버의 일반 파일 경로는 재배포 때 보존되지 않으므로 이 방식에 적합하지 않습니다.** 다중 서버에서는 Redis REST 방식을 사용하세요.
 
-## 4. 사용자 이용
+설정 후 `/api/agent/health` 응답의 `individualRevocationConfigured:true`를 확인하고, 연결창 하단에서 시험용 연결코드 하나를 폐기해 실제 401 `CONNECTION_REVOKED`가 나오는지 확인하세요. 기록에는 원본 인증키 대신 연결코드의 해시만 저장됩니다.
 
-1. https://dart-navigator-v69n.onrender.com/agent-connect 접속.
-2. 본인의 40자리 DART 키 입력.
-3. dn1.로 시작하는 연결코드 전체를 복사해 비밀번호 관리자 등에 보관.
-4. 본인의 GPT 대화에 코드를 붙여 넣고 질문.
+## 4. ChatGPT 에이전트 만들기
 
-**시간 만료와 정기 재발급은 없습니다.** 같은 서버 비밀값을 유지하면 재시작·재배포·절전 후에도 같은 코드가 동작합니다. 새 GPT 대화에서는 보관한 같은 코드를 다시 붙여 넣습니다. GPT가 모든 대화에서 자동 로그인 상태를 기억하도록 만든 것은 아닙니다. 대화가 길어져 코드가 문맥에서 빠진 경우에도 같은 코드를 다시 제공하면 됩니다.
+아래 경로는 이번 전체 ZIP에 포함된 `GPT_AGENT_SETUP` 폴더를 기준으로 합니다.
 
-과거 1시간 코드(64자리)는 최초 한 번 새 코드로 전환해야 합니다. 이후 정기 재발급은 없습니다. DART 키를 폐기·변경하거나 서버 암호화 비밀값을 바꾸면 기존 코드가 유효하지 않게 됩니다. 코드를 잃어버리면 다시 만들 수 있습니다. 같은 DART 키로 여러 번 만들면 이전 코드도 계속 유효합니다.
+1. GPT 만들기 → 구성(Configure) 선택
+2. 이름·설명은 `GPT_AGENT_SETUP/01_GPT_PROFILE_KO.txt` 참고
+3. 지침(Instructions)에 `GPT_AGENT_SETUP/02_GPT_INSTRUCTIONS_KO.txt` 전체 입력
+4. 새 작업 만들기 → 스키마에 `GPT_AGENT_SETUP/03_GPT_ACTION_OPENAPI.yaml` 전체 입력
+5. YAML의 `servers.url`과 지침의 연결창 주소를 실제 API 서버 주소에 맞춥니다. 현재 서버는 `https://dart-navigator-v69n.onrender.com`, 연결창은 `https://dart-navigator-v69n.onrender.com/agent-connect`입니다.
+6. 인증은 **없음(None)** 선택
+7. 테스트 후 공유 권한 설정 → GPT 링크 전달
 
-## 처리 및 보관
+이전 GPT도 최신 지침과 스키마를 교체하면 출처 구분·기간 해석·폐기 안내가 일치합니다. API 경로와 operationId는 유지됩니다. 영구 연결코드를 다시 발급받을 필요는 없습니다. 단, 이미 폐기한 코드나 서버 비밀값이 바뀐 코드는 재사용할 수 없습니다.
 
-코드에는 사용자 DART 키가 AES-256-GCM으로 암호화되어 들어 있습니다. 서버 DB·디스크·세션 Map에 원본 키를 보관하지 않습니다. 발급과 조회 요청을 처리하는 동안은 서버 메모리에서 원본 키를 처리하며, 기존 조회 엔진의 메모리 캐시는 변경하지 않았습니다. 원본 키가 영구 저장되거나 모든 메모리에서 즉시 지워진다고 보장하지 않습니다.
+## 5. 공유받은 GPT 이용하기
 
-이 코드도 원본 키를 대신하는 비밀값입니다. 다른 사람에게 공개하거나 공용 지침에 넣지 마세요. GPT 대화와 Action 요청에는 연결코드가 전달됩니다. 서버 비밀값과 코드가 함께 노출되면 원본 키도 복호화될 수 있습니다. 완전히 폐기하려면 사용자가 OpenDART에서 원본 키를 폐기·변경해야 합니다. 대화에서 연결 해제나 코드 삭제만으로는 폐기되지 않습니다. 서버 비밀값 변경은 모든 사용자의 기존 코드를 무효화합니다.
+1. 오랫동안 접속하지 않은 무료 Render 서버는 먼저 웹사이트를 열고 초기 로딩이 끝날 때까지 기다립니다. 약 1분 이상 걸릴 수 있습니다.
+2. GPT 링크 접속 → “내 DART 인증키 연결 방법을 알려줘” 입력
+3. GPT가 안내하는 `/agent-connect` 연결창 접속
+4. ‘OpenDART 인증키 40자리’에 본인 키 입력
+5. ‘계속 사용할 연결코드 받기’ 클릭
+6. 코드 전체를 복사해 비공개로 보관하고, **본인의 GPT 대화창에** 붙여 넣습니다. 원본 DART 인증키를 대화창에 입력하는 것이 아닙니다.
+7. “대한전선 2026년 상반기 연결 영업이익률을 알려줘”처럼 질문
+8. 조회 결과·계산 근거·기간·회계기준·출처 확인
 
-사용자는 화면을 닫아도 코드가 폐기되지 않습니다. 연결창은 브라우저 저장소나 URL에 원본 키·코드를 저장하지 않습니다. 사용자가 본인 코드를 별도로 보관합니다. 발급은 IP별 분당20회, 조회는 IP별 분당60회로 제한합니다. 프록시 뒤에서는 여러 사용자가 같은 IP로 계산될 수 있고, 여러 인스턴스의 요청 제한은 인스턴스별입니다. 이는 DART 자체 호출 한도를 늘리지 않습니다.
+코드 자체에는 시간 만료가 없습니다. 새 GPT 대화에서는 보관한 코드를 다시 붙여 넣으면 됩니다. 연결코드를 가진 사람은 본인 키로 조회할 수 있으므로 공개 발표자료·공유 GPT 지침에 넣지 마세요. 실제 인증 성공 여부는 첫 조회에서 확인합니다.
 
-## 배포 확인
+## 6. 웹앱 이용하기
 
-https://dart-navigator-v69n.onrender.com/api/agent/health
+1. 웹사이트에 접속하고 서버 초기 로딩이 끝날 때까지 기다립니다.
+2. 본인의 OpenDART 인증키 입력
+3. 종목 현황에서 기업 검색 → 기준기업·연결/별도 선택
+4. ‘최신 데이터 갱신’으로 현재 선택 기업·기준의 조회 캐시를 우회해 다시 확인
+5. 질문하기에서 자연어 질문, 비교분석에서 2015년 이후 연도·기간과 최대 10개 기업·2~5개 지표 선택
+6. 요약 보고서는 최근 3개년을 기본으로 연도별로 수집하며 진행 상태를 표시합니다. 2015년부터 범위를 바꿀 수 있습니다.
+7. 공시 알람 및 최근 공시 현황에서 관심기업을 최대 20개 등록. 알람 확인 후 미확인 숫자가 사라지고 새로고침 후에도 읽음 상태를 유지합니다.
+8. 결과·계산식·실제 출처 확인 → 웹사이트 주소로 공유
 
-status=ready / mode=user_dart_key_persistent / connectionExpires=false 확인. 503이면 환경변수 설정과 새 배포를 확인합니다. /api/health는 일반 서버 생존 확인이며 GPT 설정 검증과 다릅니다.
+관심기업의 신규 공시를 15초 간격으로 확인하며 브라우저가 열려 있는 동안 동작합니다. 요청 완료 후 다음 조회를 예약하고, 비활성 화면에서는 60초 간격이므로 수신 시각을 보장하는 실시간 푸시는 아닙니다. DART API 반영 시점·네트워크·인증키 한도의 영향도 받습니다.
 
-GitHub Pages만 배포해서는 API 서버가 갱신되지 않습니다. GitHub Pages를 계속 사용하는 경우 기존 VITE_API_BASE_URL, CORS_ALLOWED_ORIGINS를 유지합니다. Render 주소로 웹앱을 쓰면 같은 서버에서 화면과 API를 제공합니다.
+## 7. 무료 Render와 API 한도
 
-Render 무료 서버의 절전·초기 대기 시간은 유지됩니다. 연결코드는 없어지지 않지만, 서버가 깨어나는 동안 대기하거나 첫 GPT 요청이 시간 초과될 수 있습니다. 서버 접속 후 다시 질의하세요. 이 변경으로 콜드 스타트까지 없어진 것은 아닙니다.
+무료 Render의 비활성 후 초기 구동 지연은 이 코드 변경으로 제거되지 않습니다. GPT Action도 같은 서버를 사용하므로 첫 요청이 제한시간에 걸릴 수 있습니다. 먼저 웹앱을 열어 초기 로딩을 마친 뒤 이용하거나 잠시 후 재시도하세요. 상시 실행되는 유료 컴퓨트 인스턴스를 쓰면 무료 인스턴스의 비활성 종료를 피할 수 있지만, 일반 네트워크 지연까지 없어지는 것은 아닙니다.
 
-## 검증
+서버는 같은 인증키·회사·조회 기간의 동시 공시 요청을 합치고 15초간 재사용합니다. 여러 탭이 API 호출을 중복 소비하는 일을 줄입니다. 서버 프로세스별 기본 일일 호출 예산은 키당 18,000회이며 `DART_DAILY_REQUEST_BUDGET`으로 조정할 수 있습니다. 이는 OpenDART의 실제 이용 한도를 대신하지 않습니다. 다른 앱·여러 인스턴스·재시작까지 통합 집계한 값은 아니며, 실제 한도 초과/상태 020이면 오류를 그대로 안내합니다. 관심기업이 많으면 15초 조회를 하루 종일 유지할 수 없으므로 필요할 때만 브라우저를 열어 두세요.
 
-로컬 자동 테스트 19개 통과(새 연결 방식14개 + 기존 공시 폴링5개). 시간 경과, 다른 서버 인스턴스에 같은 코드 사용, 사용자 키 분리, 변조 거부, 잘못된 입력과 요청 제한을 확인했습니다. 소스127개의 구문과 로컬 import468개 검사에서 오류가 없었습니다.
+## 8. 배포 후 확인
 
-전체 프로덕션 빌드는 의존성 다운로드 제한으로 완료하지 못했습니다. 실제 Render 배포·DART 인증키 통신·GPT Preview·실공시 숫자 정확도는 미검증입니다. 로컬 테스트에서 DART 질의 함수는 고정 응답을 주입했습니다. 현재 서버에 자동 배포를 실행한 것은 아닙니다.
+- 좌측 상단 `DART FINDER`, 민감도/추가 기능 메뉴 없음
+- 기준기업 → 조회 완료 안내 → 등록 종목 순서, 기업 검색과 최신 데이터 갱신 위치
+- 비교분석에서 기업 10개 한도 및 연도·기간 변경 시 즉시 이전 값 지우기
+- 가온전선 등 계정명 변형 기업, 연결·별도 빠른 전환, 2015년 분기 실제 조회
+- `/api/health`의 release가 `dart-finder-20261029-audit18-r2`인지 확인하고 commit을 Render의 배포 커밋과 대조
+- `/agent-connect`가 404가 아닌지 확인, `/api/agent/health`의 status 확인
+- 연결코드 폐기는 저장소를 설정한 경우에만 시험
+- 다운로드 단위·출처와 미확인 공시를 실제 원문과 대조
 
-공식 참고: https://developers.openai.com/api/docs/actions/authentication
-https://developers.openai.com/api/docs/actions/production
+검증 한계: 이 작업 환경에서는 npm 다운로드가 차단되어 실제 Vite/esbuild 빌드, 전체 TypeScript 검사와 정식 Vitest 실행, 실서비스 DART/Render/GPT 호출은 완료하지 못했습니다. 포함된 CI가 이 검사들을 실행하도록 수정했습니다. CI 실패 시 배포가 중단되도록 했으며, 배포 성공을 이 ZIP 생성만으로 보장하지 않습니다.
