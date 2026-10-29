@@ -71,8 +71,8 @@ export function pairedIncome(rows: Row[], period: AccountPeriod, names: string[]
   const sections = ["CIS","IS"];
   for (const section of sections) {
     const candidates = rows.filter(r => r.sj_div === section);
-    const revenue = findRevenueRow(candidates, [section]);
-    const profit = findRowLike(candidates, [section], names);
+    const revenue = findRevenueRow(candidates, [section], period);
+    const profit = findRowLike(candidates, [section], names, period);
     if (!revenue) continue;
     if (!profit) return null;
     const scope = ["corp_code", "bsns_year", "reprt_code", "fs_div", "rcept_no"] as const;
@@ -114,10 +114,10 @@ export const findRow = (rows: Row[], sj: string[], names: string[]) => {
  * IFRS 표준계정코드로 반환될 수 있습니다. 재무제표 API의 account_id를 우선
  * 활용하되, 매출원가·매출채권·기타수익을 매출로 오인하지 않습니다.
  */
-export const findRevenueRow = (rows: Row[], sj: string[] = ["CIS", "IS"]) => {
+export const findRevenueRow = (rows: Row[], sj: string[] = ["CIS", "IS"], period?: AccountPeriod) => {
   const normalize = (value?: string) => normalizeAccountName(value).replace(/[()（）,，:：]/g, "").toLowerCase();
   const exactNames = [
-    "매출액", "수익(매출액)", "영업수익", "매출", "매출(수익)", "수익",
+    "매출액", "수익(매출액)", "영업수익", "매출액(영업수익)", "영업수익(매출액)", "총영업수익", "영업수익합계", "매출", "매출(수익)", "수익",
     "고객과의계약에서생기는수익", "고객과의계약에서생기는수익(매출액)", "고객과의계약에서발생하는수익",
   ].map(normalize);
   const idPattern = /^(?:ifrs-full_Revenue|dart_OperatingRevenue|ifrs-full_RevenueFromContractsWithCustomers|ifrs-full_RevenueFromContractsWithCustomersIncludingAmountsCollectedOnBehalfOfThirdParties)$/i;
@@ -134,7 +134,7 @@ export const findRevenueRow = (rows: Row[], sj: string[] = ["CIS", "IS"]) => {
     if (!idMatch && exactIndex < 0 && !prefixMatch) return [];
     // 값이 있는 행을 우선하고, 표준 계정코드/정확한 계정명/접두어 순으로 선택합니다.
     const raw = row.thstrm_add_amount || row.thstrm_amount || "";
-    const hasAmount = amountOf(row,0,true) !== null || amountOf(row) !== null;
+    const hasAmount = period ? periodAmount(row,period) !== null : amountOf(row,0,true) !== null || amountOf(row) !== null;
     const rank = idMatch ? 0 : exactIndex >= 0 ? 1 + exactIndex : 20;
     return [{ row, score: (hasAmount ? 0 : 100) + rank }];
   });
@@ -145,7 +145,7 @@ export const findRevenueRow = (rows: Row[], sj: string[] = ["CIS", "IS"]) => {
   return candidates[0]?.row;
 };
 
-export const findRowLike = (rows: Row[], sj: string[], names: string[]) => {
+export const findRowLike = (rows: Row[], sj: string[], names: string[], period?: AccountPeriod) => {
   const target = names.map(normalizeAccountName);
   const standards = STANDARD_ACCOUNTS.filter(group => group.names.some(name => target.includes(normalizeAccountName(name))));
   const candidates = rows.flatMap(row => {
@@ -160,7 +160,7 @@ export const findRowLike = (rows: Row[], sj: string[], names: string[]) => {
     const prefix = target.findIndex(name => name.length>=3 && account.startsWith(name) && !(name==="매출" && /^(매출채권|매출원가|매출총이익)/.test(account)));
     if (!standard && exact<0 && !alias && prefix<0) return [];
     // A blank aggregate row must not hide a populated duplicate in another income statement.
-    const available = amountOf(row) !== null || amountOf(row,0,true) !== null;
+    const available = period ? periodAmount(row,period) !== null : amountOf(row) !== null || amountOf(row,0,true) !== null;
     return [{row, available, rank:standard ? 0 : exact>=0 ? 10+exact : alias ? 30 : 50+prefix}];
   });
   candidates.sort((a,b) => Number(b.available)-Number(a.available) || sj.indexOf(a.row.sj_div ?? "")-sj.indexOf(b.row.sj_div ?? "") || a.rank-b.rank || normalizeAccountName(a.row.account_nm).length-normalizeAccountName(b.row.account_nm).length);
@@ -200,6 +200,11 @@ Object.assign(ACCOUNT_SPECS, {
 });
 
 export function selectAccount(rows: Row[], term: string, period?: AccountPeriod, basis: "CFS" | "OFS" = "CFS") {
+  if (term === "매출액") {
+    const row = findRevenueRow(rows.filter(item => !item.fs_div || item.fs_div === basis), ["CIS","IS"], period);
+    const value = row ? (period ? periodAmount(row,period) : amountOf(row,0,true)) : null;
+    return row && value !== null ? {row,value,rank:0} : null;
+  }
   const spec = ACCOUNT_SPECS[term];
   const names = (spec?.names ?? [term]).map(normalizeAccountName);
   const sections = spec?.sj ?? ["BS","CIS","IS","CF"];
