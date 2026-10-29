@@ -1,3 +1,5 @@
+> 최신 GPT 연결 방식은 [00_APPLY_AGENT_PERSISTENT_KO.md](00_APPLY_AGENT_PERSISTENT_KO.md)를 따릅니다. AGENT_API_KEY가 아닌 서버 암호화용 AGENT_CONNECTION_SECRET을 설정하며 기존 값은 재배포 때 유지합니다.
+
 # DART 조회 서버 연결 가이드
 
 ## 왜 필요한가

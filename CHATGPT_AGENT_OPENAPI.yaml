@@ -1,32 +1,29 @@
 openapi: 3.1.0
 info:
   title: Disclosure Navigator DART Agent API
-  version: 1.0.0
-  description: >-
-    Retrieve and calculate company financial figures from OpenDART disclosures.
-    The server owns the OpenDART API key; this API requires a separate bearer secret.
+  version: 3.0.0
+  description: DART lookup with a reusable, encrypted per-user connection code. No time expiry or shared GPT API
+    key.
 servers:
-  - url: https://YOUR-RENDER-SERVICE.onrender.com
-    description: Replace this placeholder with the public HTTPS address of your deployed Express API.
-security:
-  - bearerAuth: []
+- url: https://dart-navigator-v69n.onrender.com
+  description: DART Navigator API. Change if the actual API host changes.
+security: []
 paths:
   /api/agent/query:
     post:
       operationId: queryDisclosureNavigator
       summary: Query DART financial disclosures in Korean natural language
-      description: >-
-        Parse a Korean question that identifies a company, financial metric, period,
-        consolidation basis, and requested comparison or trend. Do not invent a value
-        when the requested filing or account is missing. A successful HTTP response can
-        contain found=false when the data is unavailable or unsupported.
+      description: Read DART financial data using the user encrypted connection code from /agent-connect. Codes
+        have no time expiry and survive restarts while the server encryption secret is unchanged.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [question]
+              required:
+              - question
+              - sessionToken
               properties:
                 question:
                   type: string
@@ -34,9 +31,16 @@ paths:
                   maxLength: 300
                   description: Korean-language natural-language financial question
                   examples:
-                    - 대한전선 2026년 상반기 연결 기준 영업이익률
-                    - 대한전선 최근 4개년 상반기 매출액
-                    - 대한전선 2024~2026 매출과 영업이익 비교
+                  - 대한전선 2026년 상반기 연결 기준 영업이익률
+                  - 대한전선 최근 4개년 상반기 매출액
+                  - 대한전선 2024~2026 매출과 영업이익 비교
+                sessionToken:
+                  type: string
+                  pattern: ^dn1\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{54}\.[A-Za-z0-9_-]{22}$
+                  minLength: 98
+                  maxLength: 98
+                  description: Entire case-sensitive dn1. connection code supplied by this user. Never invent a
+                    code or use a raw DART key.
       responses:
         '200':
           description: Query completed. Check the found property before presenting any numbers.
@@ -44,8 +48,8 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: '#/components/schemas/AgentSuccess'
-                  - $ref: '#/components/schemas/AgentNotFound'
+                - $ref: '#/components/schemas/AgentSuccess'
+                - $ref: '#/components/schemas/AgentNotFound'
         '400':
           description: Invalid question
           content:
@@ -53,7 +57,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AgentNotFound'
         '401':
-          description: Missing or invalid Agent API bearer token
+          description: Missing, invalid, old-format or tampered connection code, or server encryption secret changed.
           content:
             application/json:
               schema:
@@ -64,22 +68,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentNotFound'
-        '503':
-          description: Agent API or server-side OpenDART credentials are not configured
+        '429':
+          description: Too many lookup requests. Retry after one minute.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentNotFound'
+        '503':
+          description: Server AGENT_CONNECTION_SECRET has not been configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNotFound'
+      x-openai-isConsequential: false
+      security: []
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: AGENT_API_KEY
   schemas:
     AgentNotFound:
       type: object
-      required: [found, message]
+      required:
+      - found
+      - message
       properties:
         found:
           type: boolean
@@ -88,7 +97,8 @@ components:
           type: string
     AgentSuccess:
       type: object
-      required: [found, company, period, basis, metric, headline]
+      required:
+      - found
       properties:
         found:
           type: boolean
@@ -101,13 +111,15 @@ components:
           type: string
           description: Consolidated (연결 기준) or separate (별도 기준)
         notice:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
         metric:
           oneOf:
-            - type: string
-            - type: array
-              items:
-                type: string
+          - type: string
+          - type: array
+            items:
+              type: string
         headline:
           type: string
         lines:
@@ -115,12 +127,16 @@ components:
           items:
             type: string
         formula:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
         citation:
           type: string
           description: DART receipt/source link as returned by the server
         disclaimer:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
         series:
           type: array
           items:

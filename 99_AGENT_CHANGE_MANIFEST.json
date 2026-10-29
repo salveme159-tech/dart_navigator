@@ -1,0 +1,30 @@
+{
+  "changed": [
+    ".env.example",
+    "CHATGPT_AGENT_INSTRUCTIONS_KO.md",
+    "CHATGPT_AGENT_MIGRATION.md",
+    "CHATGPT_AGENT_OPENAPI.yaml",
+    "CHATGPT_AGENT_PROFILE.md",
+    "CHATGPT_AGENT_SETUP_KO.md",
+    "DEPLOY_BACKEND_KO.md",
+    "GPT_AGENT_SETUP/00_START_HERE_KO.md",
+    "GPT_AGENT_SETUP/01_GPT_PROFILE_KO.txt",
+    "GPT_AGENT_SETUP/02_GPT_INSTRUCTIONS_KO.txt",
+    "GPT_AGENT_SETUP/03_GPT_ACTION_OPENAPI.yaml",
+    "GPT_AGENT_SETUP/04_TEST_CASES_KO.md",
+    "GPT_AGENT_SETUP/05_TEST_API.ps1",
+    "GPT_AGENT_SETUP/06_SUBMISSION_CHECKLIST_KO.md",
+    "GPT_AGENT_SETUP/privacy-policy-template.html",
+    "README.md",
+    "env.example",
+    "render.yaml",
+    "server/_core/index.ts"
+  ],
+  "added": [
+    "01_GENERATE_SERVER_SECRET.ps1",
+    "00_APPLY_AGENT_PERSISTENT_KO.md",
+    "scripts/test-agent-user-key.mjs",
+    "server/_core/userAgent.ts"
+  ],
+  "preservedFilesCompared": 108
+}

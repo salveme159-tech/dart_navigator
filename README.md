@@ -1,3 +1,5 @@
+> 2026-10-29 최신 ChatGPT 연동: [00_APPLY_AGENT_PERSISTENT_KO.md](00_APPLY_AGENT_PERSISTENT_KO.md)를 먼저 읽으세요. 과거 변경기록의 공용 AGENT_API_KEY 설명은 이전 방식입니다. 현재 설정은 GPT_AGENT_SETUP의 만료 없는 사용자별 연결코드 방식입니다.
+
 # Disclosure Navigator
 
 DART(OpenDART) 공시자료를 기반으로 회사별 재무지표를 조회하고, 기간·추이·비교 질문에 답하는 공모전용 웹앱입니다.
@@ -37,7 +39,7 @@ pnpm dev
 
 - **같은 서버에서 화면과 API를 함께 서비스**하면 기본 설정(`/api/trpc`)을 그대로 사용합니다.
 - **GitHub Pages + 별도 API 서버** 구조라면 프런트엔드를 빌드할 때 `VITE_API_BASE_URL=https://실제-API-도메인`을 지정하고, API 서버 환경변수 `CORS_ALLOWED_ORIGINS`에는 `https://계정.github.io`처럼 실제 화면의 origin만 넣습니다. API 서버를 HTTPS로 배포하세요.
-- ChatGPT GPT Action에는 `CHATGPT_AGENT_OPENAPI.yaml`을 사용합니다. `servers[0].url`을 실제 API 주소로 바꾸고, 서버에 `OPENDART_API_KEY`와 별도 무작위 `AGENT_API_KEY`를 설정한 뒤 Action 인증을 Bearer로 구성합니다. OpenDART 키를 GPT 지침이나 YAML에 직접 넣지 마세요.
+- ChatGPT GPT Action에는 `GPT_AGENT_SETUP/03_GPT_ACTION_OPENAPI.yaml`을 사용합니다. `servers[0].url`을 실제 API 주소로 맞추고 인증은 None으로 설정합니다. 서버의 `AGENT_CONNECTION_SECRET`은 처음 한 번 설정한 값을 계속 유지합니다. 각 사용자는 `/agent-connect`에서 본인 DART 키로 만료 없는 연결코드를 만들어 사용합니다. 원본 키·연결코드·서버 비밀값을 공용 GPT 지침이나 YAML에 넣지 마세요.
 - 배포 환경의 공개 tRPC DART 조회는 사용자 자신의 40자리 `X-OpenDART-Key`가 있어야 합니다. GPT Action은 서버의 OpenDART 키를 사용하는 인증된 `/api/agent/query`만 호출합니다.
 
 > GitHub Pages는 정적 호스팅이므로 그 자체로는 서버 코드를 실행하지 않습니다. 화면만 배포한 상태에서는 실시간 자연어 조회가 동작하지 않으며, 서버 API 배포와 정확한 주소 설정이 모두 필요합니다.
