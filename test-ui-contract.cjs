@@ -13,7 +13,7 @@ const transformer=context=>{const visit=node=>{if(ts.isVariableDeclaration(node)
  }return ts.visitEachChild(node,visit,context);};return node=>ts.visitNode(node,visit);};
 const code=ts.transpileModule(source,{fileName:'Home.tsx',compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React,esModuleInterop:true},transformers:{before:[transformer]}}).outputText;
 const React={createElement:(type,props,...children)=>({type,props:props||{},children}),Fragment:'fragment',useState:value=>[typeof value==='function'?value():value,()=>{}],useMemo:fn=>fn(),useEffect:()=>{},useRef:value=>({current:value})};
-const dummy=()=>null,req=id=>{if(id==='react')return {__esModule:true,default:React,...React};if(id==='lucide-react')return new Proxy({},{get:(_t,name)=>String(name)});if(id==='@/lib/realDartClient')return client;if(id==='@/lib/apiBase')return {apiBaseUrl:'',apiUrl:x=>x};if(id==='@/lib/metricSources')return load('client/src/lib/metricSources.ts');if(id==='@/lib/xlsxExport')return load('client/src/lib/xlsxExport.ts');return {__esModule:true,default:dummy,startComparisonLoad:dummy,startFilingPolling:dummy};};
+const dummy=()=>null,req=id=>{if(id==='react')return {__esModule:true,default:React,...React};if(id==='lucide-react')return new Proxy({},{get:(_t,name)=>String(name)});if(id==='@/lib/realDartClient')return client;if(id==='@/lib/apiBase')return {apiBaseUrl:'',apiUrl:x=>x};if(id==='@shared/comparisonMetrics')return load('shared/comparisonMetrics.ts');if(id==='@/lib/metricSources')return load('client/src/lib/metricSources.ts');if(id==='@/lib/xlsxExport')return load('client/src/lib/xlsxExport.ts');return {__esModule:true,default:dummy,startComparisonLoad:dummy,startFilingPolling:dummy};};
 let overrides={};const mod={exports:{}};new Function('require','module','exports','__state',code)(req,mod,mod.exports,(name,value)=>Object.hasOwn(overrides,name)?overrides[name]:value);
 function render(tab,extra={}){overrides={activeTab:tab,isApiGateOpen:false,apiKey:'a'.repeat(40),companies:[company],selectedCorpName:company.corpName,askCorpName:company.corpName,compareCorpNames:[company.corpName],apiStatusMessage:'✓ 검증전선: 실제 OpenDART 재무자료를 조회했습니다.',...extra};return mod.exports.default();}
 function text(node){if(node==null||typeof node==='boolean')return '';if(typeof node!=='object')return String(node);if(Array.isArray(node))return node.map(text).join(' ');return (node.children||[]).map(text).join(' ');}
@@ -21,9 +21,25 @@ function nodes(node,out=[]){if(node&&typeof node==='object'){if(!Array.isArray(n
 let tree=render('DASHBOARD'),all=text(tree);
 assert.ok(all.includes('DART FINDER'));assert.ok(!all.includes('손익 민감도 체크'));assert.ok(!all.includes('추가 기능'));assert.ok(all.includes('주요 실적'));
 const main=nodes(tree).find(n=>n.type==='main'),content=text(main);assert.ok(content.indexOf('기업 검색')<content.indexOf('기준 기업'));assert.ok(content.indexOf('기준 기업')<content.indexOf('✓ 검증전선'));assert.ok(content.indexOf('✓ 검증전선')<content.indexOf('등록 종목'));assert.ok(content.includes('최신 데이터 갱신'));
-tree=render('ASK');assert.ok(nodes(tree).some(n=>n.type==='input'&&n.props.placeholder==='기업명 검색'));assert.ok(!text(tree).includes('DART 기업명 검색'));
-tree=render('COMPARE');all=text(tree);assert.ok(all.includes('최대 10개 비교 가능'));assert.ok(!all.includes('모든 기업을 같은 연도'));assert.ok(!all.includes('기업을 검색해 등록·삭제하고'));assert.ok(!all.includes('조회 상태'));assert.ok(all.includes('결과값 비교'));assert.ok(!all.includes('공시값 비교'));
-tree=render('ALERTS');all=text(tree);assert.ok(all.includes('공시 알람 및 최근 공시 현황'));assert.ok(all.includes('관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.'));assert.ok(all.includes('기업 등록하기'));assert.ok(!all.includes('지금 확인'));
+const dashboardSearch=nodes(tree).find(n=>n.type==='button'&&text(n).trim()==='기업 검색');
+assert.ok(dashboardSearch.props.className.includes('bg-white'));
+assert.ok(nodes(tree).find(n=>n.type==='button'&&text(n).includes('최신 데이터 갱신')).props.className.includes('ml-auto'));
+for(const caption of ['요약 보고서 보기','질문하기 ➔'])assert.ok(nodes(tree).find(n=>n.type==='button'&&text(n).includes(caption)).props.className.includes('bg-white'));
+tree=render('ASK');const askSearch=nodes(tree).find(n=>n.type==='button'&&text(n).trim()==='기업 검색');assert.equal(askSearch.props.className,dashboardSearch.props.className);assert.ok(nodes(tree).some(n=>n.props['data-company-search']==='true'));
+tree=render('ASK',{showAskCompanyInput:true});assert.ok(nodes(tree).some(n=>n.type==='input'&&n.props.placeholder==='기업명 검색'&&n.props.className.includes('bg-white')));assert.ok(!text(tree).includes('DART 기업명 검색'));
+for(const metric of mod.exports.METRIC_DEFINITIONS){const id=mod.exports.COMPARISON_METRIC_BY_UI_LABEL[metric.id];assert.ok(id,'Missing comparison mapping: '+metric.id);const labels=load('server/dart/engine.ts').METRIC_LABELS,extra=load('shared/comparisonMetrics.ts').EXTRA_COMPARISON_METRIC_IDS;assert.ok(Object.hasOwn(labels,id)||extra.includes(id),'Unsupported comparison API metric: '+id);}
+
+tree=render('COMPARE');all=text(tree);assert.ok(all.includes('최대 10개 비교 가능'));assert.ok(!all.includes('모든 기업을 같은 연도'));assert.ok(!all.includes('기업을 검색해 등록·삭제하고'));assert.ok(!all.includes('조회 상태'));assert.ok(all.includes('결과값 비교'));assert.ok(!all.includes('공시값 비교'));assert.ok(!nodes(tree).some(n=>n.type==='option'&&n.props.value==='h2'));
+tree=render('ALERTS');all=text(tree);assert.ok(all.includes('공시 알림 및 최신 현황'));const alertLabel=nodes(tree).find(n=>n.type==='span'&&text(n)==='공시 알림 및 최신 현황');assert.ok(alertLabel);assert.ok(!/text-\[|text-xs/.test(alertLabel.props.className));const alertButton=nodes(tree).find(n=>n.type==='button'&&n.children.includes(alertLabel));assert.ok(alertButton.props.className.includes('text-sm'));assert.ok(all.includes('관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.'));assert.ok(all.includes('기업 등록하기'));assert.ok(!all.includes('지금 확인'));
 tree=render('ONE_PAGER');all=text(tree);assert.equal(all.split('2026 반기보고서 · 상반기 누적(1~6월) · 기준일 2026.06.30').length-1,1);
 tree=render('ALERTS',{currentCompanyFilings:[{company:'이전기업',reportName:'다른기업옛공시',rceptNo:'20261029000001',receiptDate:'20261029',url:'https://dart.fss.or.kr/'}]});assert.ok(!text(tree).includes('다른기업옛공시'));
+
+const receipt='20260814000001',sample={company:company.corpName,found:true,value:100,unit:'억원',period:'2026 반기보고서',basis:'연결',rceptNo:receipt,citation:`DART (https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${receipt})`};
+tree=render('COMPARE',{compareMetricIds:['유동자산','차입금'],liveCompareResults:{유동자산:[sample],차입금:[sample]}});
+const sourceCell=nodes(tree).find(n=>n.type==='td'&&n.props.className.includes('min-w-[190px]'));assert.equal(nodes(sourceCell).filter(n=>n.type==='a').length,1,'Same report has one source link');
+tree=render('COMPARE',{compareMetricIds:['유동자산','차입금'],liveCompareResults:{유동자산:[sample],차입금:[{...sample,citation:'FnGuide (https://comp.fnguide.com/test)',rceptNo:''}]}});
+const mixed=nodes(tree).find(n=>n.type==='td'&&n.props.className.includes('min-w-[190px]'));assert.equal(nodes(mixed).filter(n=>n.type==='summary').length,1,'Different sources share one collapsed entry');
+
 console.log('Home element tree: 5 tab renders and requested content/order contracts passed (controlled hook adapter, no browser).');
+
+module.exports={render,text,nodes,company,definitions:mod.exports.METRIC_DEFINITIONS};
