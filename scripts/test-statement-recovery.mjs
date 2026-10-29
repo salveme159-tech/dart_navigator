@@ -26,7 +26,10 @@ test('부분 보완에도 손익 누락이 남으면 재조회 가능한 상태�
 for (const [label,report] of [['2015 1분기','11013'],['2015 상반기','11012'],['2015 3분기','11014']]) {
  test(label+' 전체 API가 비었어도 같은 분기 주요계정으로 복구',async()=>{
   const scoped={...scope,year:2015,report,receipt:'20151116000969'};
-  const values=[major('매출액','100000000000'),major('영업이익','8000000000'),major('당기순이익','5000000000')].map(r=>({...r,bsns_year:'2015',reprt_code:report,rcept_no:scoped.receipt}));
+  // The major-account API supplies a period or an explicit cumulative field.
+  // A bare three-month amount is not evidence of a half-year/YTD value.
+  const end=report==='11013'?'03.31':report==='11012'?'06.30':'09.30';
+  const values=[major('매출액','100000000000'),major('영업이익','8000000000'),major('당기순이익','5000000000')].map(r=>({...r,bsns_year:'2015',reprt_code:report,rcept_no:scoped.receipt,thstrm_dt:`2015.01.01 ~ 2015.${end}`}));
   const result=await recoverStatementRows([],scoped,async()=>({status:'000',list:[...values,major('영업이익','999000000000',{bsns_year:'2015',reprt_code:'11011',rcept_no:scoped.receipt})]}));
   assert.equal(result.status,'recovered');assert.equal(amountOf(op(result.rows)),80);assert.equal(result.rows.length,3);
  });

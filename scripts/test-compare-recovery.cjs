@@ -12,7 +12,7 @@ const stubs={
  'env':{ENV:{opendartApiKey:'a'.repeat(40)}},
  'crossValidation':{crossValidateMetric:async()=>{validationCalls++;return {providers:[],status:'UNAVAILABLE'}},crossValidateMetrics:async()=>({}),clearCrossValidationCache:()=>{},fetchNaverDebtFallback:unavailable},
  'fnGuideFallback':{fetchFnGuideFallback:unavailable,fetchFnGuideLeaseLiabilities:unavailable},
- 'disclosureNotes':{parseDepreciationFromDisclosure:()=>null,parseLeaseLiabilitiesFromDisclosure:()=>null,parseBorrowingTotalFromDisclosure:()=>null},
+ 'disclosureNotes':{parseDepreciationFromDisclosure:()=>null,parseLeaseLiabilitiesFromDisclosure:()=>null,parseBorrowingTotalFromDisclosure:()=>null,parseRevenueFromDisclosure:()=>null},
 };
 const cache=new Map();
 function load(file){file=path.resolve(file);if(cache.has(file))return cache.get(file).exports;const module={exports:{}};cache.set(file,module);const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;

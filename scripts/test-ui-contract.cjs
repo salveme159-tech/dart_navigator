@@ -27,10 +27,10 @@ assert.ok(nodes(tree).find(n=>n.type==='button'&&text(n).includes('최신 데이
 for(const caption of ['요약 보고서 보기','질문하기 ➔'])assert.ok(nodes(tree).find(n=>n.type==='button'&&text(n).includes(caption)).props.className.includes('bg-white'));
 tree=render('ASK');const askSearch=nodes(tree).find(n=>n.type==='button'&&text(n).trim()==='기업 검색');assert.equal(askSearch.props.className,dashboardSearch.props.className);assert.ok(nodes(tree).some(n=>n.props['data-company-search']==='true'));
 tree=render('ASK',{showAskCompanyInput:true});assert.ok(nodes(tree).some(n=>n.type==='input'&&n.props.placeholder==='기업명 검색'&&n.props.className.includes('bg-white')));assert.ok(!text(tree).includes('DART 기업명 검색'));
-for(const metric of mod.exports.METRIC_DEFINITIONS){const id=mod.exports.SERVER_METRIC_BY_UI_LABEL[metric.id];assert.ok(id,'Missing comparison mapping: '+metric.id);const labels=load('server/dart/engine.ts').METRIC_LABELS,extra=load('shared/comparisonMetrics.ts').EXTRA_COMPARISON_METRIC_IDS;assert.ok(Object.hasOwn(labels,id)||extra.includes(id),'Unsupported comparison API metric: '+id);}
+for(const metric of mod.exports.METRIC_DEFINITIONS){const id=mod.exports.COMPARISON_METRIC_BY_UI_LABEL[metric.id];assert.ok(id,'Missing comparison mapping: '+metric.id);const labels=load('server/dart/engine.ts').METRIC_LABELS,extra=load('shared/comparisonMetrics.ts').EXTRA_COMPARISON_METRIC_IDS;assert.ok(Object.hasOwn(labels,id)||extra.includes(id),'Unsupported comparison API metric: '+id);}
 
 tree=render('COMPARE');all=text(tree);assert.ok(all.includes('최대 10개 비교 가능'));assert.ok(!all.includes('모든 기업을 같은 연도'));assert.ok(!all.includes('기업을 검색해 등록·삭제하고'));assert.ok(!all.includes('조회 상태'));assert.ok(all.includes('결과값 비교'));assert.ok(!all.includes('공시값 비교'));assert.ok(!nodes(tree).some(n=>n.type==='option'&&n.props.value==='h2'));
-tree=render('ALERTS');all=text(tree);assert.ok(all.includes('공시 알람·공시 리스트'));assert.ok(nodes(tree).some(n=>n.type==='span'&&text(n)==='공시 알람·공시 리스트'&&n.props.className.includes('whitespace-nowrap')));assert.ok(all.includes('관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.'));assert.ok(all.includes('기업 등록하기'));assert.ok(!all.includes('지금 확인'));
+tree=render('ALERTS');all=text(tree);assert.ok(all.includes('공시 알림 및 최신 현황'));const alertLabel=nodes(tree).find(n=>n.type==='span'&&text(n)==='공시 알림 및 최신 현황');assert.ok(alertLabel);assert.ok(!/text-\[|text-xs/.test(alertLabel.props.className));const alertButton=nodes(tree).find(n=>n.type==='button'&&n.children.includes(alertLabel));assert.ok(alertButton.props.className.includes('text-sm'));assert.ok(all.includes('관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.'));assert.ok(all.includes('기업 등록하기'));assert.ok(!all.includes('지금 확인'));
 tree=render('ONE_PAGER');all=text(tree);assert.equal(all.split('2026 반기보고서 · 상반기 누적(1~6월) · 기준일 2026.06.30').length-1,1);
 tree=render('ALERTS',{currentCompanyFilings:[{company:'이전기업',reportName:'다른기업옛공시',rceptNo:'20261029000001',receiptDate:'20261029',url:'https://dart.fss.or.kr/'}]});assert.ok(!text(tree).includes('다른기업옛공시'));
 
@@ -41,3 +41,5 @@ tree=render('COMPARE',{compareMetricIds:['유동자산','차입금'],liveCompare
 const mixed=nodes(tree).find(n=>n.type==='td'&&n.props.className.includes('min-w-[190px]'));assert.equal(nodes(mixed).filter(n=>n.type==='summary').length,1,'Different sources share one collapsed entry');
 
 console.log('Home element tree: 5 tab renders and requested content/order contracts passed (controlled hook adapter, no browser).');
+
+module.exports={render,text,nodes,company,definitions:mod.exports.METRIC_DEFINITIONS};

@@ -9,7 +9,7 @@ module.exports=function createLoader(root,overrides={}){
   apiBase:{apiBaseUrl:'',apiUrl:route=>route},
   crossValidation:{crossValidateMetric:async()=>({providers:[],status:'UNAVAILABLE'}),crossValidateMetrics:async()=>({}),clearCrossValidationCache:()=>{},fetchNaverDebtFallback:unavailable},
   fnGuideFallback:{fetchFnGuideFallback:unavailable,fetchFnGuideLeaseLiabilities:unavailable},
-  disclosureNotes:{parseDepreciationFromDisclosure:()=>null,parseLeaseLiabilitiesFromDisclosure:()=>null,parseBorrowingTotalFromDisclosure:()=>null},
+  disclosureNotes:{parseDepreciationFromDisclosure:()=>null,parseLeaseLiabilitiesFromDisclosure:()=>null,parseBorrowingTotalFromDisclosure:()=>null,parseRevenueFromDisclosure:()=>null},
   ...overrides,
  };
  const cache=new Map();
