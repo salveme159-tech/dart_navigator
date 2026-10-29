@@ -598,13 +598,6 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
     };
   }
 
-  if (metric === "payables") {
-    const row = findRowLike(rows, ["BS"], ["매입채무", "매입채무및기타채무", "유동매입채무"]);
-    const value = row ? amountOf(row) : null;
-    if (value === null || !row) return null;
-    return { value, unit: "억원", lines: [`원천 계정: ${row.account_nm} ${won(value)}`], formula: null, disclaimer: null, sourceHeading: `재무상태표 > ${row.account_nm}` };
-  }
-
   if (metric === "capex") {
     const row = findRowLike(rows, ["CF"], metricConfig.capex.names);
     const rawValue = row ? periodAmount(row, period) : null;
