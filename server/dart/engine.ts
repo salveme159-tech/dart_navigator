@@ -118,104 +118,22 @@ export function unzipAll(buf: Buffer): Array<{ name: string; text: string }> {
 
 export const fsDivFor = (q: string): "CFS" | "OFS" => (/별도|개별/.test(q) ? "OFS" : "CFS");
 export const fsLabel = (fs: "CFS" | "OFS") => (fs === "CFS" ? "연결 기준" : "별도 기준");
-export const parseYear = (q: string): number | null => {
-  const m = q.match(/20\d\d/);
-  return m ? Number(m[0]) : null;
-};
-
-export type Row = {
-  sj_div?: string;
-  sj_nm?: string;
-  account_id?: string;
-  unit?: string;
-  thstrm_nm?: string;
-  account_nm?: string;
-  thstrm_amount?: string;
-  thstrm_add_amount?: string;
-  frmtrm_amount?: string;
-  bfefrmtrm_amount?: string;
-  rcept_no?: string;
-};
-
-const N = (s?: string) => (s ?? "").replace(/[\s·ㆍ]/g, "");
-const AMT = ["thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount"] as const;
-
-export function amountOf(r: Row, idx = 0, cum = false): number | null {
-  const raw = ((cum && idx === 0 && r.thstrm_add_amount ? r.thstrm_add_amount : r[AMT[idx]]) ?? "").replace(/,/g, "").trim();
-  if (!raw) return null;
-  // DART 원문에서 명시적으로 0을 뜻하는 대시와 괄호 음수를 표준화합니다.
-  if (/^(?:-|—|–|－|−)$/.test(raw)) return 0;
-  const negativeParentheses = /^\(.*\)$/.test(raw);
-  const n = Number(negativeParentheses ? `-${raw.slice(1, -1)}` : raw);
-  return Number.isFinite(n) ? n / 1e8 : null;
+export function relativeYears(q: string, now = new Date()): number[] {
+  const explicit = [...new Set((q.match(/20\d\d/g) ?? []).map(Number))];
+  if (explicit.length) return explicit;
+  const year = Number(new Intl.DateTimeFormat("en", {timeZone:"Asia/Seoul",year:"numeric"}).format(now));
+  const years: number[] = [];
+  if (/재작년|재지난해/.test(q)) years.push(year-2);
+  if (/작년|지난해|전년도|전년(?!대비)/.test(q.replace(/재작년|재지난해/g,""))) years.push(year-1);
+  if (/올해|금년|당해연도|금년도/.test(q)) years.push(year);
+  return [...new Set(years)].sort((a,b)=>a-b);
 }
+export const parseYear = (q: string, now = new Date()): number | null => relativeYears(q,now).at(-1) ?? null;
 
-export const findRow = (rows: Row[], sj: string[], names: string[]) => {
-  const target = names.map(N);
-  return rows.find((r) => sj.includes(r.sj_div ?? "") && target.includes(N(r.account_nm)) && !N(r.account_nm).includes("리스"));
-};
-
-/**
- * 매출은 회사·연도에 따라 계정명이 "매출액", "영업수익", "수익(매출액)" 또는
- * IFRS 표준계정코드로 반환될 수 있습니다. 재무제표 API의 account_id를 우선
- * 활용하되, 매출원가·매출채권·기타수익을 매출로 오인하지 않습니다.
- */
-export const findRevenueRow = (rows: Row[], sj: string[] = ["CIS", "IS"]) => {
-  const normalize = (value?: string) => N(value).replace(/[()（）,，:：]/g, "").toLowerCase();
-  const exactNames = [
-    "매출액", "수익(매출액)", "영업수익", "매출", "매출(수익)", "수익",
-    "고객과의계약에서생기는수익", "고객과의계약에서생기는수익(매출액)", "고객과의계약에서발생하는수익",
-  ].map(normalize);
-  const idPattern = /^(?:ifrs-full_Revenue|dart_OperatingRevenue|ifrs-full_RevenueFromContractsWithCustomers|ifrs-full_RevenueFromContractsWithCustomersIncludingAmountsCollectedOnBehalfOfThirdParties)$/i;
-  const exclude = /매출채권|매출원가|매출총이익|매출할인|매출에누리|매출환입|기타수익|금융수익|지분법수익|영업외수익|법인세수익/;
-  const candidates = rows.flatMap((row) => {
-    if (!sj.includes(row.sj_div ?? "")) return [];
-    const rawName = N(row.account_nm);
-    const name = normalize(row.account_nm);
-    const accountId = String(row.account_id ?? "");
-    if (exclude.test(rawName)) return [];
-    const idMatch = idPattern.test(accountId);
-    const exactIndex = exactNames.indexOf(name);
-    const prefixMatch = ["매출액", "수익매출액", "영업수익", "매출수익", "고객과의계약에서생기는수익", "고객과의계약에서발생하는수익"].some((alias) => name.startsWith(normalize(alias)));
-    if (!idMatch && exactIndex < 0 && !prefixMatch) return [];
-    // 값이 있는 행을 우선하고, 표준 계정코드/정확한 계정명/접두어 순으로 선택합니다.
-    const raw = row.thstrm_add_amount || row.thstrm_amount || "";
-    const hasAmount = raw.trim() !== "";
-    const rank = idMatch ? 0 : exactIndex >= 0 ? 1 + exactIndex : 20;
-    return [{ row, score: (hasAmount ? 0 : 100) + rank }];
-  });
-  candidates.sort((a, b) => {
-    const statementRank = (row: Row) => sj.indexOf(row.sj_div ?? "");
-    return a.score - b.score || statementRank(a.row) - statementRank(b.row) || N(a.row.account_nm).length - N(b.row.account_nm).length;
-  });
-  return candidates[0]?.row;
-};
-
-export const findRowLike = (rows: Row[], sj: string[], names: string[]) => {
-  const target = names.map(N);
-  const candidates = rows.filter((r) => {
-    const account = N(r.account_nm);
-    // 부분 문자열 포함만으로 선택하면 '기타수익', '매출채권' 등 인접 계정이 잘못 잡힐 수 있습니다.
-    return sj.includes(r.sj_div ?? "") && target.some((n) => account === n || (n.length >= 3 && account.startsWith(n) && !(/^(매출채권|매출원가|매출총이익)/.test(account) && n === "매출"))) && !account.includes("리스");
-  });
-  // 핵심: 요청한 재무제표 종류 우선순위(CIS→IS 등)를 계정명 점수보다 먼저 반영합니다.
-  // CFS 응답 안에 IS와 CIS의 동명 계정이 함께 있을 때 별도 손익 숫자를 고르는 오류를 방지합니다.
-  const statementRank = (row: Row) => {
-    const rank = sj.indexOf(row.sj_div ?? "");
-    return rank < 0 ? 999 : rank;
-  };
-  const accountRank = (account: string) => {
-    const exact = target.findIndex((n) => account === n);
-    if (exact >= 0) return exact * 10;
-    const prefix = target.findIndex((n) => account.startsWith(n));
-    return prefix >= 0 ? prefix * 10 + 1 : 999;
-  };
-  return candidates.sort((a, b) =>
-    statementRank(a) - statementRank(b) ||
-    accountRank(N(a.account_nm)) - accountRank(N(b.account_nm)) ||
-    N(a.account_nm).length - N(b.account_nm).length
-  )[0];
-};
+export { amountOf, findRow, findRevenueRow, findRowLike, normalizeAccountName } from "../../shared/financialAccounts.ts";
+import { amountOf, findRow, findRevenueRow, findRowLike, type Row } from "../../shared/financialAccounts.ts";
+export type { Row } from "../../shared/financialAccounts.ts";
+const N = (s?: string) => (s ?? "").replace(/[\s·ㆍ]/g, "");
 
 type Groups = [string, string[]][];
 const DEBT: Groups = [
@@ -388,8 +306,9 @@ export type Period = { year: number; kind: Kind; code: string; mode: "cum" | "qt
 export const P = (year: number, kind: Kind, mode: "cum" | "qtr" = "cum"): Period => ({ year, kind, code: CODE[kind], mode });
 
 export function periodCandidates(q: string, now = new Date()): Period[] {
-  const y = parseYear(q);
-  const cur = now.getFullYear();
+  const y = parseYear(q, now);
+  const koreanNow = new Date(now.getTime()+9*3600_000);
+  const cur = koreanNow.getUTCFullYear();
   const year = y ?? cur;
   const asksCurrentYear = /올해|금년|당해연도/.test(q);
   const asksPreviousYear = /작년|지난해|전년도/.test(q);
@@ -398,19 +317,19 @@ export function periodCandidates(q: string, now = new Date()): Period[] {
   if (/상반기|반기/.test(q)) return [P(year, "half")];
   if (/2\s*분기/.test(q)) return [P(year, "half", "qtr")];
   if (/1\s*분기/.test(q)) return [P(year, "q1")];
-  if (/3\s*분기/.test(q)) return [P(year, "q3")];
+  if (/3\s*분기/.test(q)) return [P(year, "q3", /누적|누계/.test(q) ? "cum" : "qtr")];
   if (/사업보고서|연간|연도별|연간실적/.test(q) || (asksPreviousYear && !asksCurrentYear)) {
     return [P(y ?? cur - 1, "annual")];
   }
   if (y && y < cur) return [P(y, "annual")];
   // 정기보고서 제출기한을 고려해 아직 제출되지 않았을 가능성이 높은 보고서를 첫 호출로 두지 않습니다.
   // 예: 10월에는 3분기보고서보다 이미 공개된 반기보고서를 먼저 조회해 기업 등록 대기를 줄입니다.
-  const month = now.getMonth() + 1;
-  const latest: Period[] = month >= 11
+  const month = koreanNow.getUTCMonth() + 1;
+  const latest: Period[] = month >= 10
     ? [P(year, "q3"), P(year, "half"), P(year, "q1"), P(year - 1, "annual")]
-    : month >= 8
+    : month >= 7
       ? [P(year, "half"), P(year, "q1"), P(year - 1, "annual")]
-      : month >= 5
+      : month >= 4
         ? [P(year, "q1"), P(year - 1, "annual")]
         : [P(year - 1, "annual"), P(year - 1, "q3"), P(year - 1, "half")];
   return latest;
@@ -451,7 +370,7 @@ const UNIQUE_METRICS = (items: FinancialMetric[]) => [...new Set(items)];
 
 export function parseDartQuery(question: string, now = new Date()): ParsedDartQuery {
   const q = question.replace(/[？?]/g, "").trim();
-  const years = [...new Set((q.match(/20\d{2}/g) ?? []).map(Number))];
+  const years = relativeYears(q,now);
   const range = q.match(/(20\d{2})\s*(?:~|〜|-|–|—|부터|에서)\s*(20\d{2})/);
   const yearStart = range ? Number(range[1]) : null;
   const yearEnd = range ? Number(range[2]) : null;
@@ -464,7 +383,7 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
   else if (/2\s*분기/.test(q)) { kind = "half"; mode = "qtr"; }
   else if (/상반기|반기/.test(q)) kind = "half";
   else if (/1\s*분기/.test(q)) kind = "q1";
-  else if (/3\s*분기/.test(q)) kind = "q3";
+  else if (/3\s*분기/.test(q)) { kind = "q3"; mode = /누적|누계/.test(q) ? "cum" : "qtr"; }
   else if (/사업보고서|연간|연도별|연간실적/.test(q)) kind = "annual";
   else if (/최신|최근 공시|가장 최근/.test(q)) kind = "latest";
 
@@ -528,7 +447,7 @@ export function parseDartQuery(question: string, now = new Date()): ParsedDartQu
   const directAccount = [...ACCOUNT_ALIASES].sort((a, b) => Math.max(...b[1].map((x) => N(x).length)) - Math.max(...a[1].map((x) => N(x).length))).find(([, aliases]) => aliases.some((a) => nq.includes(N(a))) )?.[0] ?? null;
 
   const hasCauseIntent = /증가원인|감소원인|증가\s*이유|감소\s*이유|왜\s*(?:증가|감소|늘|줄)|원인|이유|왜/.test(q);
-  const hasComparison = /비교|차이|대비|전년|전년대비|vs|증감|늘었|줄었|증가|감소|높아|낮아|차이가|보다/.test(q) || years.length >= 2 || !!range;
+  const hasComparison = /비교|차이|대비|전년대비|전년\s*대비|vs|증감|늘었|줄었|증가|감소|높아|낮아|차이가|보다/.test(q) || years.length >= 2 || !!range;
   const hasTrend = /추이|트렌드|추세|연도별|기간별|변화(?:추이)?|흐름\s*(?:추이|변화)/.test(q) || !!recentYears;
   const analysis: QueryAnalysis = hasCauseIntent ? "cause" : hasTrend && !hasComparison ? "trend" : hasComparison ? "comparison" : "single";
 
@@ -588,7 +507,7 @@ export const METRIC_LABELS: Record<FinancialMetric, string> = {
 
 export const metricConfig: Record<FinancialMetric, { sj: string[]; names: string[] }> = {
   revenue: { sj: ["CIS", "IS"], names: ["매출액", "수익(매출액)", "영업수익", "매출", "수익", "고객과의계약에서생기는수익", "고객과의계약에서발생하는수익"] },
-  operatingProfit: { sj: ["CIS", "IS"], names: ["영업이익", "영업이익(손실)"] },
+  operatingProfit: { sj: ["CIS", "IS"], names: ["영업이익", "영업이익(손실)", "영업손익", "영업손실"] },
   netIncome: { sj: ["CIS", "IS"], names: ["반기순손익", "분기순손익", "당기순손익", "반기순이익", "분기순이익", "당기순이익", "당기순이익(손실)", "반기순이익(손실)", "분기순이익(손실)", "연결당기순이익", "연결당기순이익(손실)", "지배기업의소유주에게귀속되는당기순이익", "지배기업소유주지분당기순이익"] },
   operatingMargin: { sj: ["CIS", "IS"], names: [] },
   netMargin: { sj: ["CIS", "IS"], names: [] },

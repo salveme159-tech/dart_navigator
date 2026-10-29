@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { recoverStatementRows } from "./statementRecovery";
 import { TRPCError } from "@trpc/server";
 import { ENV } from "../_core/env";
 import { extractInitialViewerArgs, parseViewerDeepLinkHtml } from "./viewerLink";
@@ -37,8 +39,10 @@ import {
 
 const BASE = "https://opendart.fss.or.kr/api";
 const won = (v: number) => !Number.isFinite(v) ? "자료 없음" : `${v.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}억원`;
+const corpInFlight = new Map<string, Promise<Map<string, Corp>>>();
 let corpCache: { at: number; map: Map<string, Corp> } | null = null;
 const stmtCache = new Map<string, { at: number; rows: Row[] | null }>();
+const statementInFlight = new Map<string, Promise<Row[] | null>>();
 const filingCache = new Map<string, { at: number; filing: { rceptNo: string; reportName: string; receiptDate: string } | null }>();
 const documentCache = new Map<string, { at: number; text: string }>();
 const documentEntriesCache = new Map<string, { at: number; entries: Array<{ name: string; text: string }> }>();
@@ -51,14 +55,29 @@ function historyResponseShape(points: Array<{ period: string; rceptNo?: string; 
   return { points, failures };
 }
 
+type RecentResult={rows:Array<{company:string;reportName:string;receiptDate:string;rceptNo:string;url:string}>;warning:string|null};
+const recentCache=new Map<string,{at:number;value:RecentResult}>();
+const recentInFlight=new Map<string,Promise<RecentResult>>();
+const dailyRequests=new Map<string,{day:string;count:number}>();
 async function dartFetch(input: string | URL, init: RequestInit = {}, timeoutMs = 12_000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeoutId);
+  const url=new URL(input);
+  const credential=url.searchParams.get("crtfc_key");
+  if(credential && url.hostname==="opendart.fss.or.kr") {
+    const day=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Seoul"}).format(new Date());
+    const id=createHash("sha256").update(credential).digest("hex");
+    for(const [k,v] of dailyRequests)if(v.day!==day)dailyRequests.delete(k);
+    if(!dailyRequests.has(id) && dailyRequests.size>=2048)throw new Error("DART 요청이 많습니다. 잠시 후 재시도해 주세요.");
+    const usage=dailyRequests.get(id)||{day,count:0};
+    const configured=Number(process.env.DART_DAILY_REQUEST_BUDGET||18000);
+    const budget=Number.isFinite(configured)&&configured>0?configured:18000;
+    if(usage.count>=budget)throw new Error("인증키의 서버 내 일일 조회 예산에 도달했습니다. 공시 알림을 잠시 중단하고 다음 날 재시도하세요.");
+    usage.count++;dailyRequests.set(id,usage);
   }
+  // Buffer the body within the deadline as well as the response headers.
+  const signal = init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+  const response = await fetch(input, { ...init, signal });
+  const bytes = await response.arrayBuffer();
+  return new Response(bytes, {status:response.status,statusText:response.statusText,headers:response.headers});
 }
 
 /** DART 본문 응답의 charset을 존중해 목차 제목이 깨져 링크 추출에 실패하지 않도록 합니다. */
@@ -102,11 +121,16 @@ function key(requestKey?: string) {
 
 async function corps(force = false, requestKey?: string) {
   if (!force && corpCache && Date.now() - corpCache.at < 864e5) return corpCache.map;
-  const res = await dartFetch(`${BASE}/corpCode.xml?crtfc_key=${encodeURIComponent(key(requestKey))}`, {}, 15_000);
-  if (!res.ok) throw new TRPCError({ code: "BAD_GATEWAY", message: `DART 기업코드 조회 실패: HTTP ${res.status}` });
-  const map = parseCorps(unzipFirst(Buffer.from(await res.arrayBuffer())));
-  corpCache = { at: Date.now(), map };
-  return map;
+  const fingerprint=createHash("sha256").update(key(requestKey)).digest("hex");
+  const pending=corpInFlight.get(fingerprint);if(pending)return pending;
+  const load=async()=>{
+    const res=await dartFetch(`${BASE}/corpCode.xml?crtfc_key=${encodeURIComponent(key(requestKey))}`,{},15_000);
+    if(!res.ok)throw new TRPCError({code:"BAD_GATEWAY",message:`DART 기업코드 조회 실패: HTTP ${res.status}`});
+    const map=parseCorps(unzipFirst(Buffer.from(await res.arrayBuffer())));
+    corpCache={at:Date.now(),map};return map;
+  };
+  const request=load();corpInFlight.set(fingerprint,request);
+  try{return await request;}finally{if(corpInFlight.get(fingerprint)===request)corpInFlight.delete(fingerprint);}
 }
 
 function expectedReportPattern(year: number, reprt: string): RegExp {
@@ -115,31 +139,69 @@ function expectedReportPattern(year: number, reprt: string): RegExp {
   return new RegExp(`${type}.*${year}[.\-/]?${month}`);
 }
 
+const latestPeriodsCache = new Map<string,{at:number;periods:Period[]}>();
+async function filingPages(code:string, fromDate:string, endDate:string, requestKey?:string, annualOnly=false) {
+  const rows:DartFiling[]=[];
+  const startedAt=Date.now();
+  for(let page=1;page<=100;page++) {
+    if(Date.now()-startedAt>30_000)throw new Error("공시 목록 조회가 지연되고 있습니다. 확인 시점을 갱신하지 않고 다시 확인합니다.");
+    const params=new URLSearchParams({crtfc_key:key(requestKey),corp_code:code,bgn_de:fromDate,end_de:endDate,page_no:String(page),page_count:"100",sort:"date",sort_mth:"desc"});
+    if(annualOnly){params.set("pblntf_ty","A");params.set("last_reprt_at","Y");}
+    const response=await dartFetch(`${BASE}/list.json?${params}`,{cache:"no-store",headers:{"Cache-Control":"no-cache"}},8_000);
+    if(!response.ok)throw new Error(`DART 공시목록 HTTP ${response.status}`);
+    const json=await response.json() as {status:string;message?:string;list?:DartFiling[];total_page?:number};
+    if(json.status==="013")break;
+    if(json.status!=="000")throw new Error(`DART 공시목록 ${json.status}: ${json.message ?? "조회 실패"}`);
+    rows.push(...(json.list ?? []));
+    if(page>=Number(json.total_page || 1))break;
+    if(page===100)throw new Error("공시목록 페이지가 100개를 넘어 전체 조회를 완료하지 못했습니다.");
+  }
+  const seen=new Set<string>();
+  for(const filing of rows){
+    const match=filing.report_nm?.match(/(20\d{2})[.\-/](03|06|09|12)/);
+    if(!match || !/사업보고서|반기보고서|분기보고서/.test(filing.report_nm))continue;
+    const report=match[2]==="12"?"11011":match[2]==="06"?"11012":match[2]==="03"?"11013":"11014";
+    const periodKey=`${code}-${match[1]}-${report}`;
+    if(seen.has(periodKey))continue;seen.add(periodKey);
+    const old=filingCache.get(periodKey)?.filing;
+    if(old && old.rceptNo!==filing.rcept_no){
+      for(const k of stmtCache.keys())if(k.startsWith(periodKey+"-"))stmtCache.delete(k);
+      for(const k of historyCache.keys())if(k.startsWith(code+":"))historyCache.delete(k);
+    }
+    filingCache.set(periodKey,{at:Date.now(),filing:{rceptNo:filing.rcept_no,reportName:filing.report_nm,receiptDate:filing.rcept_dt}});
+  }
+  return rows;
+}
+
+async function latestPublishedPeriods(code:string,requestKey?:string,force=false) {
+  const cached=latestPeriodsCache.get(code);
+  if(!force && cached && Date.now()-cached.at<15_000)return cached.periods;
+  const year=new Date().getFullYear();
+  const filings=await filingPages(code,`${year-2}0101`,`${year}1231`,requestKey,true);
+  const periods=new Map<string,Period>();
+  for(const filing of filings){
+    const match=filing.report_nm.match(/(20\d{2})[.\-/](03|06|09|12)/);
+    if(!match || !/사업보고서|반기보고서|분기보고서/.test(filing.report_nm))continue;
+    const kind:Kind=match[2]==="12"?"annual":match[2]==="06"?"half":match[2]==="03"?"q1":"q3";
+    periods.set(`${match[1]}:${kind}`,P(Number(match[1]),kind));
+  }
+  const rank:Record<Kind,number>={q1:1,half:2,q3:3,annual:4};
+  const sorted=[...periods.values()].sort((a,b)=>b.year-a.year || rank[b.kind]-rank[a.kind]);
+  latestPeriodsCache.set(code,{at:Date.now(),periods:sorted});
+  return sorted;
+}
+
 async function lookupFilingForPeriod(code: string, year: number, reprt: string, requestKey?: string) {
   const cacheKey = `${code}-${year}-${reprt}`;
   const cached = filingCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < 6 * 3600_000) return cached.filing;
+  if (cached && Date.now() - cached.at < (cached.filing ? 60_000 : 15_000)) return cached.filing;
   const nowYear = new Date().getFullYear();
-  // 해당 회계기간에 맞는 공시 접수연도만 검색합니다. 여러 해를 한꺼번에 검색해
-  // 최신 100건에 밀려 과거 분기 접수번호를 놓치는 일을 줄입니다.
   const startYear = reprt === "11011" ? year + 1 : year;
-  if (startYear > nowYear) { filingCache.set(cacheKey, { at: Date.now(), filing: null }); return null; }
-  const endYear = Math.min(nowYear, startYear);
-  const params = new URLSearchParams({
-    crtfc_key: key(requestKey), corp_code: code,
-    bgn_de: `${startYear}0101`, end_de: `${Math.max(startYear, endYear)}1231`,
-    last_reprt_at: "Y", pblntf_ty: "A", page_no: "1", page_count: "100",
-    sort: "date", sort_mth: "desc",
-  });
-  const response = await dartFetch(`${BASE}/list.json?${params}`, {}, 8_000);
-  if (!response.ok) throw new TRPCError({ code: "BAD_GATEWAY", message: `DART 공시목록 조회 실패: HTTP ${response.status}` });
-  const json = await response.json() as { status: string; message?: string; list?: DartFiling[] };
-  if (json.status !== "000" && json.status !== "013") {
-    throw new TRPCError({ code: "BAD_GATEWAY", message: `DART 공시목록 ${json.status}: ${json.message ?? "조회 실패"}` });
-  }
+  if(startYear>nowYear)return null;
+  const list=await filingPages(code,`${startYear}0101`,`${nowYear}1231`,requestKey,true);
   const pattern = expectedReportPattern(year, reprt);
   const typeOnly = reprt === "11011" ? /사업보고서/ : reprt === "11012" ? /반기보고서/ : /분기보고서/;
-  const matching = (json.list ?? []).filter((item) => {
+  const matching = list.filter((item) => {
     if (!/^\d{14}$/.test(item.rcept_no ?? "")) return false;
     if (!typeOnly.test(item.report_nm ?? "")) return false;
     return pattern.test(item.report_nm ?? "");
@@ -152,7 +214,7 @@ async function lookupFilingForPeriod(code: string, year: number, reprt: string, 
 async function filingForPeriod(code: string, year: number, reprt: string, requestKey?: string) {
   const cacheKey = `${code}-${year}-${reprt}`;
   const cached = filingCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < 6 * 3600_000) return cached.filing;
+  if (cached && Date.now() - cached.at < (cached.filing ? 60_000 : 15_000)) return cached.filing;
   const inflight = filingInFlight.get(cacheKey);
   if (inflight) return inflight;
   const pending = lookupFilingForPeriod(code, year, reprt, requestKey);
@@ -165,118 +227,50 @@ async function filingForPeriod(code: string, year: number, reprt: string, reques
 }
 
 async function statements(code: string, year: number, reprt: string, fs: "CFS" | "OFS", force = false, requestKey?: string): Promise<Row[] | null> {
-  const k = `${code}-${year}-${reprt}-${fs}`;
+  const fingerprint = createHash("sha256").update(key(requestKey)).digest("hex").slice(0,24);
+  const k = `${code}-${year}-${reprt}-${fs}-${fingerprint}`;
   const hit = stmtCache.get(k);
-  if (!force && hit && Date.now() - hit.at < 36e5) return hit.rows;
-  const currentKey = key(requestKey);
-  const url = `${BASE}/fnlttSinglAcntAll.json?crtfc_key=${encodeURIComponent(currentKey)}&corp_code=${encodeURIComponent(code)}&bsns_year=${year}&reprt_code=${reprt}&fs_div=${fs}`;
-  // 재무제표와 접수번호를 병렬 조회합니다. 과거 4개년 시계열에서 각 요청을 순차 대기하면
-  // 40건 이상이 연쇄 대기해 화면이 장시간 로딩 상태에 머물 수 있습니다.
-  const [response, filingResult] = await Promise.all([
-    dartFetch(url, {}, 8_000),
-    // 목록 API가 일시적으로 실패해도 재무제표 API에 실접수번호가 있으면 해당 응답을 보존합니다.
-    filingForPeriod(code, year, reprt, requestKey).then((filing) => ({ filing })).catch(() => ({ filing: null })),
-  ]);
-  const filing = filingResult.filing;
-  if (!response.ok) throw new TRPCError({ code: "BAD_GATEWAY", message: `DART 재무제표 조회 실패: HTTP ${response.status}` });
-  const json = await response.json() as { status: string; message?: string; list?: Row[] };
-  if (json.status !== "000" && json.status !== "013") {
-    throw new TRPCError({ code: "BAD_GATEWAY", message: `DART ${json.status}: ${json.message ?? "조회 실패"}` });
-  }
-  if (json.status === "013" || !(json.list?.length)) {
-    stmtCache.set(k, { at: Date.now(), rows: null });
-    return null;
-  }
-  // 재무제표 API도 실제 접수번호(rcept_no)를 제공합니다. 목록 API에서 보고서 제목 매칭이 실패하더라도
-  // 재무제표 응답에 포함된 14자리 실접수번호를 사용하고, 가짜 번호는 절대 만들지 않습니다.
-  const statementReceiptNo = (json.list ?? []).find((row) => /^\d{14}$/.test(row.rcept_no ?? ""))?.rcept_no;
-  const receiptNo = statementReceiptNo ?? filing?.rceptNo;
-  if (!receiptNo || !/^\d{14}$/.test(receiptNo)) {
-    stmtCache.set(k, { at: Date.now(), rows: null });
-    return null;
-  }
-  const rows = (json.list ?? []).map((row) => ({
-    ...row,
-    rcept_no: /^\d{14}$/.test(row.rcept_no ?? "") ? row.rcept_no : receiptNo,
-  }));
-  stmtCache.set(k, { at: Date.now(), rows });
-  return rows;
+  // A temporary incomplete response must not hide the income statement for one hour.
+  const incomplete = !hit?.rows?.length || hit.rows.some(row=>Boolean(row.recovery_note && !row.recovery_note.includes("보완했습니다")));
+  if (!force && hit && Date.now()-hit.at < (incomplete ? 15_000 : 60_000)) return hit.rows;
+  const pending = force ? undefined : statementInFlight.get(k);
+  if (pending) return pending;
+  const load = async ():Promise<Row[] | null> => {
+    const params = new URLSearchParams({crtfc_key:key(requestKey),corp_code:code,bsns_year:String(year),reprt_code:reprt});
+    const [response,filing] = await Promise.all([
+      dartFetch(`${BASE}/fnlttSinglAcntAll.json?${params}&fs_div=${fs}`,{},8_000),
+      filingForPeriod(code,year,reprt,requestKey).catch(()=>null),
+    ]);
+    if (!response.ok) throw new TRPCError({code:"BAD_GATEWAY",message:`DART 재무제표 조회 실패: HTTP ${response.status}`});
+    const json=await response.json() as {status:string;message?:string;list?:Row[]};
+    if (!["000","013"].includes(json.status)) throw new TRPCError({code:"BAD_GATEWAY",message:`DART ${json.status}: ${json.message ?? "조회 실패"}`});
+    const primary=(json.list ?? []).filter(row=>(!row.bsns_year || String(row.bsns_year)===String(year)) && (!row.reprt_code || row.reprt_code===reprt) && (!row.fs_div || row.fs_div===fs));
+    const receipt=primary.find(row=>/^\d{14}$/.test(row.rcept_no ?? ""))?.rcept_no ?? filing?.rceptNo;
+    const recovered=await recoverStatementRows(primary,{year,report:reprt,basis:fs,receipt,corpCode:code},async()=>{
+      const response=await dartFetch(`${BASE}/fnlttSinglAcnt.json?${params}`,{},5_000);
+      if (!response.ok) throw new Error("major account request failed");
+      return await response.json();
+    });
+    const resolvedReceipt=receipt ?? recovered.rows.find(row=>/^\d{14}$/.test(row.rcept_no ?? ""))?.rcept_no;
+    const rows=resolvedReceipt ? recovered.rows.map(row=>({...row,rcept_no:row.rcept_no || resolvedReceipt})) : [];
+    const result=rows.length ? rows : null;
+    stmtCache.set(k,{at:Date.now(),rows:result});return result;
+  };
+  const request=load();statementInFlight.set(k,request);
+  try { return await request; } finally { if (statementInFlight.get(k)===request) statementInFlight.delete(k); }
 }
 
 function normAccount(s: string) { return s.replace(/[\s·ㆍ]/g, ""); }
 
-const DIRECT_ACCOUNT_SPECS: Record<string, { sj: string[]; names: string[]; ids?: RegExp[]; exclude?: RegExp[] }> = {
-  매출액: { sj: ["CIS", "IS"], names: ["매출액", "수익(매출액)", "영업수익", "매출", "수익", "고객과의계약에서생기는수익", "고객과의계약에서발생하는수익"], ids: [/^(?:ifrs-full_Revenue|dart_OperatingRevenue|ifrs-full_RevenueFromContractsWithCustomers)$/i], exclude: [/매출채권|매출원가|매출총이익|매출할인|매출에누리|매출환입|기타수익|금융수익|지분법수익|영업외수익|법인세수익/] },
-  자산총계: { sj: ["BS"], names: ["자산총계", "총자산", "자산총액", "자산합계", "자산계"], ids: [/^ifrs-full_Assets$/i, /^(?:dart_)?TotalAssets$/i] },
-  부채총계: { sj: ["BS"], names: ["부채총계", "총부채", "부채총액", "부채합계", "부채계"], ids: [/^ifrs-full_Liabilities$/i, /^(?:dart_)?TotalLiabilities$/i] },
-  자본총계: { sj: ["BS"], names: ["자본총계", "총자본", "자본총액", "자본합계", "자본계", "자본총계(지배기업의소유주에게귀속되는자본포함)"], ids: [/^ifrs-full_Equity$/i, /^(?:dart_)?TotalEquity$/i], exclude: [/지배기업소유주에게귀속되는자본$/] },
-  유동자산: { sj: ["BS"], names: ["유동자산", "유동자산합계"], ids: [/^ifrs-full_CurrentAssets$/i] },
-  유동부채: { sj: ["BS"], names: ["유동부채", "유동부채합계"], ids: [/^ifrs-full_CurrentLiabilities$/i] },
-  현금및현금성자산: { sj: ["BS"], names: ["현금및현금성자산", "현금과현금성자산", "현금및현금성자산합계"], ids: [/^ifrs-full_CashAndCashEquivalents$/i] },
-  단기금융상품: { sj: ["BS"], names: ["단기금융상품", "단기투자자산", "단기예치금", "단기금융자산"], ids: [/ShortTermDepositsNotClassifiedAsCashEquivalents/i] },
-  매출채권: { sj: ["BS"], names: ["매출채권", "매출채권및기타채권", "매출채권및기타유동채권", "유동매출채권"], ids: [/TradeAndOtherCurrentReceivables/i], exclude: [/대손충당금|손상차손누계|기대신용손실충당금/] },
-  재고자산: { sj: ["BS"], names: ["재고자산", "유동재고자산", "재고자산합계"], ids: [/^ifrs-full_Inventories$/i] },
-  매입채무: { sj: ["BS"], names: ["매입채무", "매입채무및기타채무", "매입채무및기타유동채무", "유동매입채무", "매입채무합계"], ids: [/TradeAndOtherCurrentPayables/i], exclude: [/미지급금|충당부채|리스부채/] },
-  단기차입금: { sj: ["BS"], names: ["단기차입금", "단기차입금및회사채", "단기대출금", "단기금융부채"], ids: [/ShorttermBorrowings|CurrentFinancialInstitutionBorrowings/i], exclude: [/리스부채/] },
-  유동성장기부채: { sj: ["BS"], names: ["유동성장기부채", "유동성장기차입금", "유동성사채", "유동성장기사채", "비유동차입금의유동성대체부분", "유동성장기부채및사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities/i], exclude: [/리스부채/] },
-  사채: { sj: ["BS"], names: ["사채", "회사채", "비유동사채"], ids: [/^ifrs-full_BondsIssued$/i], exclude: [/유동성|리스|할인발행차금/] },
-  장기차입금: { sj: ["BS"], names: ["장기차입금", "장기대출금", "비유동차입금", "장기차입부채"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings/i], exclude: [/리스부채|유동성|사채할인발행차금|차입금할인발행차금/] },
-  금융원가: { sj: ["IS", "CIS"], names: ["금융원가", "금융비용", "이자비용"], ids: [/^ifrs-full_FinanceCosts$/i], exclude: [/금융수익/] },
-};
+import { ACCOUNT_SPECS as DIRECT_ACCOUNT_SPECS, periodAmount, pairedIncome, sameAccountScope, selectAccount } from "../../shared/financialAccounts.ts";
 
 export function pickDirectAccount(rows: Row[], period: Period, term: string) {
-  const legacyAliases: Record<string, string[]> = {
-    유동성장기부채: ["유동성장기부채", "유동성장기차입금", "유동성사채", "유동성장기사채", "비유동차입금의유동성대체부분", "유동성장기부채및사채"],
-    유동매출채권: ["유동매출채권"], 비유동매출채권: ["비유동매출채권"],
-    이익잉여금: ["이익잉여금", "이익잉여금(결손금)"],
-    투자활동현금흐름: ["투자활동으로인한현금흐름", "투자활동현금흐름", "투자활동순현금흐름"],
-    재무활동현금흐름: ["재무활동으로인한현금흐름", "재무활동현금흐름", "재무활동순현금흐름"],
-    영업현금흐름: ["영업활동으로인한현금흐름", "영업활동현금흐름", "영업활동순현금흐름"],
-    매출액: ["매출액", "수익(매출액)", "영업수익"],
-    영업이익: ["영업이익", "영업손익"],
-    순이익: ["당기순이익", "당기순이익(손실)", "당기순손익", "반기순이익", "분기순이익"],
-  };
-  const spec = DIRECT_ACCOUNT_SPECS[term];
-  const targetNames = (spec?.names ?? legacyAliases[term] ?? [term]).map(normAccount);
-  const eligible = rows.filter((row) => {
-    if (spec && !spec.sj.includes(row.sj_div ?? "")) return false;
-    if (!spec && term === "영업현금흐름" && row.sj_div !== "CF") return false;
-    if (!spec && term === "투자활동현금흐름" && row.sj_div !== "CF") return false;
-    if (!spec && term === "재무활동현금흐름" && row.sj_div !== "CF") return false;
-    if (!spec && (term === "매출액" || term === "영업이익" || term === "순이익") && !["IS", "CIS"].includes(row.sj_div ?? "")) return false;
-    const name = normAccount(row.account_nm ?? "");
-    const id = row.account_id ?? "";
-    if (spec?.exclude?.some((pattern) => pattern.test(name))) return false;
-    return targetNames.some((target) => name === target || name.startsWith(target)) || Boolean(spec?.ids?.some((pattern) => pattern.test(id)));
-  });
-  const ranked = eligible.map((row) => {
-    const name = normAccount(row.account_nm ?? "");
-    const id = row.account_id ?? "";
-    const exact = targetNames.some((target) => name === target);
-    const idMatch = Boolean(spec?.ids?.some((pattern) => pattern.test(id)));
-    const prefix = targetNames.some((target) => name.startsWith(target));
-    const score = exact ? 0 : idMatch ? 1 : prefix ? 2 : 3;
-    const isFlow = ["IS", "CIS", "CF"].includes(row.sj_div ?? "");
-    const raw = isFlow && period.mode === "cum" ? (row.thstrm_add_amount || row.thstrm_amount || "") : (row.thstrm_amount || row.thstrm_add_amount || "");
-    const cleaned = raw.replace(/,/g, "").trim();
-    let value: number | null = null;
-    if (/^(?:-|—|–|－|−)$/.test(cleaned)) value = 0; // 원문에 명시된 대시만 0
-    else if (cleaned) {
-      const parenthesized = /^\(.*\)$/.test(cleaned);
-      const numeric = Number(parenthesized ? `-${cleaned.slice(1, -1)}` : cleaned);
-      if (Number.isFinite(numeric)) value = numeric / 1e8;
-    }
-    return { row, score, value };
-  }).sort((a, b) => a.score - b.score || normAccount(a.row.account_nm ?? "").length - normAccount(b.row.account_nm ?? "").length);
-  const selected = ranked.find((item) => item.value !== null && Number.isFinite(item.value));
+  const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
+  const selected = selectAccount(rows, term, period, basis);
   if (!selected) return null;
-  const { row, value } = selected;
-  return {
-    value: value!, unit: "억원",
-    lines: [`원천 계정: ${row.account_nm}`, `계정코드: ${row.account_id || "DART 응답에 계정코드 없음"}`, `회계기준: ${row.sj_div === "BS" ? "재무상태표 기말 잔액" : row.sj_div === "CF" ? "현금흐름표" : "손익계산서"}`, `공시 금액: ${row.thstrm_add_amount || row.thstrm_amount || "공시 금액 미기재"}원`],
-    formula: null, disclaimer: null,
-    sourceHeading: `${row.sj_div === "BS" ? "재무상태표" : row.sj_div === "CF" ? "현금흐름표" : "손익계산서"} > ${row.account_nm}`,
-  };
+  const {row,value} = selected;
+  return {value, unit:"억원", lines:[`원천 계정: ${row.account_nm}`, `계정코드: ${row.account_id || "미제공"}`, `금액 기준: ${period.mode === "cum" ? "누계" : "3개월"}`], formula:null, disclaimer:null,
+    sourceHeading:`${row.sj_div === "BS" ? "재무상태표" : row.sj_div === "CF" ? "현금흐름표" : "손익계산서"} > ${row.account_nm}`};
 }
 
 type ResolvedBalanceTotal = { value: number; label: string; sourceLabel: string; derived: boolean; lines: string[] };
@@ -329,6 +323,12 @@ function resolveBalanceTotal(rows: Row[], period: Period, label: "자산총계" 
   return null;
 }
 
+function pickedCitation(period:Period,picked:PickedMetric|null,rows:Row[],url:string|null=null) {
+  const receipt=rows.find(row=>row.rcept_no)?.rcept_no ?? "";
+  const external=/네이버 금융|FnGuide/.test(picked?.sourceHeading ?? "");
+  return `${external ? picked!.sourceHeading : citation(periodLabel(period),picked?.sourceHeading ?? "원천 계정 미확인",receipt)}${url ? ` · ${url}` : ""}`;
+}
+
 function pickRawAccountMetrics(rows: Row[], period: Period, rceptNo: string) {
   return Object.fromEntries(Object.keys(DIRECT_ACCOUNT_SPECS).map((label) => {
     const picked = pickDirectAccount(rows, period, label);
@@ -350,7 +350,7 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const excluded = /사채할인발행차금|차입금할인발행차금|미상각할인차금|할인발행차금|상환할증금|사채발행비|총차입금|차입금총계|차입금합계|총차입부채|차입금및사채|차입금및회사채|차입금과사채/;
   const groups: Array<{ group: string; aliases: string[]; ids: RegExp[]; lease?: boolean; preferAggregate?: string[]; preferSingle?: string[] }> = [
     { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings/i], preferSingle: ["단기차입금", "단기차입부채"] },
-    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongTermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
+    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
     { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채"] },
     { group: "사채", aliases: ["사채", "회사채", "비유동사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^ifrs-full_BondsIssued$|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i], preferSingle: ["사채", "회사채"] },
     { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
@@ -477,23 +477,26 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
       lines.push(`DART 원문 구성 리스부채 추가: ${won(leaseTotal)}`, `리스 포함 총차입금: ${won(totalBorrowings)}`);
       sourceHeading = `재무상태표 > ${aggregateRow.account_nm} + 리스부채 구성 계정`;
     } else if (matchesCoreOnly && leaseTotal > 0) {
+      lines.push(...coreItems.map((item) => `구성 · ${item.account}: ${won(item.value)}`));
       lines.push(`DART 구성 계정에서 확인한 유동·비유동 리스부채 추가: ${won(leaseTotal)}`, `리스 포함 총차입금: ${won(totalBorrowings)}`);
       sourceHeading = `재무상태표 > ${aggregateRow.account_nm} + 리스부채 구성 계정`;
     } else if (matchesLeaseIncluded) {
       lines.push(`구성 계정 합계(리스부채 포함): ${won(components.total)}`, `차이: ${won(Math.abs(components.total - aggregateValue))}`);
     } else if (components.coreFound > 0) {
+      lines.push(...components.items.map((item) => `구성 · ${item.account}: ${won(item.value)}`));
+      if (combinedBorrowingAndBonds) lines.push(`참고 · '${aggregateRow.account_nm}' 행은 구성 계정과의 중복 합산을 방지하기 위해 별도로 더하지 않았습니다.`);
       lines.push(`구성 계정 합계(현재 확인 범위): ${won(components.total)}`, `차이: ${won(Math.abs(components.total - aggregateValue))}`);
-      if (Math.abs(components.total - aggregateValue) > tolerance) disclaimer = "공시 합계와 구성 계정 범위가 일치하지 않습니다. 주석에서 리스부채 포함 여부를 확인해야 합니다.";
+      if (Math.abs(components.total - aggregateValue) > tolerance) disclaimer = "공시 합계와 구성 계정의 금액이 불일치합니다. 주석에서 리스부채 포함 여부를 확인해야 합니다.";
+    } else if (combinedBorrowingAndBonds) {
+      disclaimer = `구성 계정이 없어 '${aggregateRow.account_nm}' 합계 행을 사용했습니다. 리스부채는 별도 확인이 필요합니다.`;
     }
   } else if (components.coreFound > 0) {
-    // 확인된 차입금 계정들을 그대로 합산합니다. 확인되지 않은 계정은 0으로 넣지 않고 합계에서 제외하며 안내만 남깁니다.
-    totalBorrowings = components.total;
     lines = components.items.map((item) => `구성 · ${item.account}: ${won(item.value)}`);
-    lines.push(`분자 · 확인된 차입성 부채 합계(리스부채 포함): ${won(totalBorrowings)}`);
-    if (components.missing.length) {
-      lines.push(`공시에서 별도 행이 확인되지 않은 계정(합계에서 제외): ${components.missing.join(", ")}`);
-      disclaimer = `공시에 별도 행이 없거나 누락된 계정(${components.missing.join(", ")})은 합계에서 제외했습니다. 확인된 계정만 합산한 값입니다.`;
-    }
+    const missing = [...components.missing];
+    for (const lease of ["유동리스부채","비유동리스부채"]) if(!components.items.some(item=>item.group===lease)) missing.push(lease);
+    if(missing.length) return {value:Number.NaN,partialValue:components.total,missingComponents:missing,unit:metric === "borrowingsRatio" ? "%" : "억원",lines:[...lines,`확인된 차입금 부분합: ${won(components.total)}`],formula,disclaimer:`총차입금을 확정하지 않았습니다. 미확인 구성 항목: ${missing.join(", ")}. 확인된 부분합 ${won(components.total)}을 총액 또는 비율로 사용하지 않습니다.`,sourceHeading};
+    totalBorrowings = components.total;
+    lines.push(`분자 · 차입성 부채 합계(리스부채 포함): ${won(totalBorrowings)}`);
     if (components.combinedRow) lines.push(`참고 · '${components.combinedRow.account_nm}' 행은 구성 계정과의 중복 합산을 막기 위해 제외`);
     sourceHeading = "재무상태표 > 차입금·사채·리스부채 구성 계정";
   } else if (components.combinedRow) {
@@ -516,7 +519,7 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
   if (metric === "borrowings") return { value: totalBorrowings, unit: "억원", lines, formula, disclaimer, sourceHeading };
   const resolvedAssets = resolveBalanceTotal(rows, period, "자산총계");
   const assets = resolvedAssets?.value ?? null;
-  if (assets === null || !Number.isFinite(assets) || assets <= 0 || !Number.isFinite(totalBorrowings)) {
+  if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0 || !Number.isFinite(totalBorrowings)) {
     return { value: Number.NaN, unit: "%", lines: [...lines, "분모 · 자산총계 확인 실패"], formula: "차입금의존도 = 총차입성 부채(리스 포함) ÷ 자산총계 × 100", disclaimer: "자산총계 행과 부채총계+자본총계 대체 산식을 모두 확인하지 못해 차입금 의존도를 계산하지 않았습니다.", sourceHeading };
   }
   const ratio = totalBorrowings / assets * 100;
@@ -524,7 +527,7 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
   return { value: ratio, unit: "%", lines, formula: "차입금의존도 = (차입금 + 사채 + 유동·비유동 리스부채) ÷ 자산총계 × 100", disclaimer, sourceHeading: `${sourceHeading}·자산총계` };
 }
 
-type PickedMetric = { value: number; unit: string; lines: string[]; formula: string | null; disclaimer: string | null; sourceHeading: string };
+type PickedMetric = { partialValue?: number; missingComponents?: string[]; value: number; unit: string; lines: string[]; formula: string | null; disclaimer: string | null; sourceHeading: string };
 
 export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric): PickedMetric | null {
   if (metric === "borrowings" || metric === "borrowingsRatio") {
@@ -575,7 +578,7 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
 
   if (metric === "capex") {
     const row = findRowLike(rows, ["CF"], metricConfig.capex.names);
-    const rawValue = row ? amountOf(row, 0, period.mode === "cum") : null;
+    const rawValue = row ? periodAmount(row, period) : null;
     if (!row || rawValue === null || !Number.isFinite(rawValue)) return null;
     // 현금흐름표의 유형자산 취득은 일반적으로 현금 유출(음수)입니다. CAPEX는 지출 규모로 양수화하여 FCF 계산과 맞춥니다.
     const value = Math.abs(rawValue);
@@ -626,14 +629,10 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
   }
 
   if (metric === "operatingMargin" || metric === "netMargin") {
-    const revenue = findRevenueRow(rows, ["CIS", "IS"]);
-    const profitNames = metric === "operatingMargin"
-      ? metricConfig.operatingProfit.names
-      : metricConfig.netIncome.names;
-    const profit = findRowLike(rows, ["CIS", "IS"], profitNames);
-    const rev = revenue ? amountOf(revenue, 0, period.mode === "cum") : null;
-    const profitValue = profit ? amountOf(profit, 0, period.mode === "cum") : null;
-    if (rev === null || profitValue === null || rev === 0) return null;
+    const profitNames = metric === "operatingMargin" ? metricConfig.operatingProfit.names : metricConfig.netIncome.names;
+    const pair = pairedIncome(rows, period, profitNames);
+    if (!pair || pair.rev === 0) return null;
+    const {rev, value: profitValue} = pair;
     const label = METRIC_LABELS[metric];
     const profitLabel = metric === "operatingMargin" ? "영업이익" : "순이익";
     return {
@@ -648,9 +647,11 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
 
 
   if (metric === "interestCoverage") {
-    const op = findRowLike(rows, ["CIS", "IS"], metricConfig.operatingProfit.names);
-    const interest = findRowLike(rows, ["CIS", "IS"], ["이자비용", "이자비용(금융원가)", "금융원가"]);
-    const ov = op ? amountOf(op, 0, period.mode === "cum") : null; const iv = interest ? amountOf(interest, 0, period.mode === "cum") : null;
+    const basis=rows.find(row=>row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
+    const interest=selectAccount(rows,"이자비용",period,basis)?.row;
+    const op=interest ? findRowLike(rows,[interest.sj_div ?? ""],metricConfig.operatingProfit.names) : undefined;
+    if(!op || !interest || !sameAccountScope(op,interest))return null;
+    const ov = op ? periodAmount(op, period) : null; const iv = interest ? periodAmount(interest, period) : null;
     if (ov === null || iv === null || iv === 0) return null;
     return { value: ov / Math.abs(iv), unit: "배", lines: [`영업이익 ${won(ov)} / ${interest!.account_nm} ${won(iv)}`], formula: "이자보상배율 = 영업이익 ÷ 이자비용", disclaimer: null, sourceHeading: "손익계산서 > 영업이익·이자비용" };
   }
@@ -659,7 +660,7 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
     const profitRow = findRowLike(rows, ["CIS", "IS"], metricConfig.netIncome.names);
     const baseName = metric === "roe" ? "자본총계" : "자산총계";
     const baseRow = findRowLike(rows, ["BS"], [baseName]);
-    const profit = profitRow ? amountOf(profitRow, 0, period.mode === "cum") : null;
+    const profit = profitRow ? periodAmount(profitRow, period) : null;
     const cur = baseRow ? amountOf(baseRow, 0) : null; const prev = baseRow ? amountOf(baseRow, 1) : null;
     if (profit === null || cur === null || prev === null || (cur + prev) === 0) return null;
     const avg = (cur + prev) / 2;
@@ -669,29 +670,20 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
   if (metric === "eps") {
     const row = findRowLike(rows, ["CIS", "IS"], metricConfig.eps.names);
     const raw = row ? (row.thstrm_amount ?? "").replace(/,/g, "").trim() : "";
-    const value = raw === "" || Number.isNaN(Number(raw)) ? null : Number(raw);
+    const parsed = row ? periodAmount(row,period) : null;
+    const value = parsed === null ? null : parsed * 1e8;
     if (value === null) return null;
     return { value, unit: "원", lines: [`원천 계정: ${row!.account_nm}`], formula: "EPS = 주당순이익 공시값", disclaimer: null, sourceHeading: `손익계산서 > ${row!.account_nm}` };
   }
 
   if (metric === "ebitda") {
     const op = findRowLike(rows, ["CIS", "IS"], metricConfig.operatingProfit.names);
-    const ov = op ? amountOf(op, 0, period.mode === "cum") : null;
+    const ov = op ? periodAmount(op, period) : null;
     if (ov === null || !Number.isFinite(ov)) return null;
 
     const statementPriority = ["CF", "CIS", "IS"] as const;
     const normalize = (value: string) => value.replace(/[\s·ㆍ()（）]/g, "").toLowerCase();
-    const expenseAmountOf = (row: Row) => {
-      const raw = ((period.mode === "cum" && row.thstrm_add_amount) ? row.thstrm_add_amount : row.thstrm_amount ?? "").replace(/,/g, "").trim();
-      // 재무제표에 명시적으로 기재된 대시만 0으로 인정하며, 공란은 미확인으로 유지합니다.
-      if (/^(?:-|—|–|－|−)$/.test(raw)) return 0;
-      const parenthesized = /^\(.*\)$/.test(raw);
-      if (parenthesized) {
-        const numeric = Number(`-${raw.slice(1, -1).replace(/,/g, "")}`);
-        return Number.isFinite(numeric) ? numeric / 1e8 : null;
-      }
-      return amountOf(row, 0, period.mode === "cum");
-    };
+    const expenseAmountOf = (row: Row) => periodAmount(row,period);
     const aggregateName = /(감가상각비.*무형자산상각비|무형자산상각비.*감가상각비|유무형자산.*상각|유형자산.*상각비.*무형자산.*상각|감가상각및상각비|감가상각비와상각비|감가상각비및무형자산상각비|감가상각비와무형자산상각비|감가상각및무형자산상각비|유형자산감가상각비및무형자산상각비|유형자산및무형자산상각비|감가상각비및상각비|감가상각및무형자산상각)/;
     const aggregateId = /DepreciationDepletionAndAmortisationExpense|DepreciationDepletionAndAmortizationExpense|DepreciationAndAmortisationExpense|DepreciationAmortisationExpense|DepreciationAndAmortizationExpense|DepreciationAmortizationExpense|AdjustmentsForDepreciationAndAmortisationExpense|AdjustmentsForDepreciationAndAmortizationExpense/i;
     const aggregateRows = rows.filter((row) => {
@@ -780,6 +772,8 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
     };
   }
 
+  const directLabels:Partial<Record<FinancialMetric,string>>={revenue:"매출액",operatingProfit:"영업이익",netIncome:"순이익",operatingCashFlow:"영업현금흐름",investmentCashFlow:"투자활동현금흐름",financingCashFlow:"재무활동현금흐름"};
+  if(directLabels[metric])return pickDirectAccount(rows,period,directLabels[metric]!);
   const config = metricConfig[metric];
   const row = metric === "revenue"
     ? findRevenueRow(rows, config.sj)
@@ -787,7 +781,7 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
       ? (findRowLike(rows, ["CIS", "IS"], ["반기순손익", "분기순손익", "당기순이익", "당기순이익(손실)", "연결당기순이익"]) ?? findRowLike(rows, config.sj, config.names))
       : findRowLike(rows, config.sj, config.names);
   const isFlowStatement = config.sj.some((statement) => ["IS", "CIS", "CF"].includes(statement));
-  const value = row ? amountOf(row, 0, isFlowStatement && period.mode === "cum") : null;
+  const value = row ? periodAmount(row, period) : null;
   if (!row || value === null) return null;
   const lines = [`원천 계정: ${row.account_nm}`];
   if (isFlowStatement && period.kind !== "annual" && row.thstrm_add_amount) lines.push(`당기 3개월: ${won(amountOf(row, 0, false) ?? 0)} / 누적: ${won(amountOf(row, 0, true) ?? 0)}`);
@@ -876,7 +870,7 @@ async function withDartLeaseFallback(args: {
     };
     const resolvedAssets = resolveBalanceTotal(rows, period, "자산총계");
     const assets = resolvedAssets?.value ?? null;
-    if (assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: `${sourceLabel} 총차입금은 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다.` } : null, url: externalTotal.url };
+    if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: `${sourceLabel} 총차입금은 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다.` } : null, url: externalTotal.url };
     const ratio = externalTotal.value / assets * 100;
     return { picked: { value: ratio, unit: "%", lines: [...externalLines, ...resolvedAssets.lines, `DART 자산총계${resolvedAssets.derived ? "(부채총계 + 자본총계로 계산)" : ""}: ${won(assets)}`, `차입금 의존도: ${won(externalTotal.value)} ÷ ${won(assets)} × 100 = ${ratio.toFixed(2)}%`], formula: `차입금 의존도 = ${sourceLabel} 총차입금 ÷ DART 자산총계 × 100`, disclaimer: `분자는 ${sourceLabel} 수치, 분모는 DART 자산총계입니다. 외부 자료의 차입금 포함 범위는 원문 주석과 함께 확인해야 합니다.`, sourceHeading: `${sourceLabel} 총차입금 + DART 자산총계` }, url: externalTotal.url };
   };
@@ -891,7 +885,7 @@ async function withDartLeaseFallback(args: {
 
   // 본문에 유동·비유동 금액이 모두 있으면 그 두 값을 우선 사용합니다.
   // 본문에서 하나라도 빠졌을 때만 DART 원문 ZIP/XML·HTML 주석을 조회합니다.
-  const bodyCurrentLease = components.items.find((item) => /유동리스부채/.test(item.group));
+  const bodyCurrentLease = components.items.find((item) => item.group === "유동리스부채");
   const bodyNoncurrentLease = components.items.find((item) => /비유동리스부채/.test(item.group));
   if (hasCompleteLeaseValues && bodyCurrentLease && bodyNoncurrentLease) {
     leaseCurrent = bodyCurrentLease.value;
@@ -901,7 +895,7 @@ async function withDartLeaseFallback(args: {
     leaseUrl = null;
   } else {
     const entries = /^\d{14}$/.test(rceptNo) ? await disclosureEntries(rceptNo, requestKey).catch(() => []) : [];
-    const dartLease = parseLeaseLiabilitiesFromDisclosure(entries, period);
+    const dartLease = parseLeaseLiabilitiesFromDisclosure(entries, period, basis);
     if (dartLease) {
       leaseCurrent = dartLease.current;
       leaseNoncurrent = dartLease.noncurrent;
@@ -935,6 +929,8 @@ async function withDartLeaseFallback(args: {
   }
   if (leaseTotal === null || !Number.isFinite(leaseTotal) || leaseTotal < 0) return externalTotalFallback(leaseUrl);
 
+  const hasCoreAggregate = rows.some(row=>row.sj_div === "BS" && /^(총차입금|차입금총계|차입금합계|총차입부채|총이자부부채|이자부부채합계|차입금및사채|차입금및회사채|차입금과사채)$/.test((row.account_nm ?? "").replace(/\s/g,"")) && amountOf(row)!==null);
+  if(!components.coreComplete && !hasCoreAggregate) return externalTotalFallback(leaseUrl);
   const normalize = (value?: string) => (value ?? "").replace(/[\s·ㆍ]/g, "");
   const aggregateNames = new Set(["총차입금", "차입금총계", "차입금합계", "총차입부채", "총이자부부채", "이자부부채합계", "차입금및사채", "차입금및회사채", "차입금과사채"]);
   const aggregateRow = rows.find((row) => row.sj_div === "BS" && aggregateNames.has(normalize(row.account_nm)));
@@ -1014,7 +1010,7 @@ async function withDartLeaseFallback(args: {
   };
   const resolvedAssets = resolveBalanceTotal(rows, period, "자산총계");
   const assets = resolvedAssets?.value ?? null;
-  if (assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: "리스부채는 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다." } : null, url: leaseUrl };
+  if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: "리스부채는 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다." } : null, url: leaseUrl };
   const ratio = ratioDebt / assets * 100;
   const leaseInclusionNote = `리스부채 ${won(leaseTotal)}은 총차입성 부채 분자에 포함했습니다.`;
   return {
@@ -1026,10 +1022,7 @@ async function resolvePeriod(corp: { code: string }, candidates: Period[], fs: "
   for (const period of candidates) {
     const primary = await statements(corp.code, period.year, period.code, fs, force, requestKey);
     if (primary) return { period, rows: primary, fs };
-    if (fs === "CFS") {
-      const fallback = await statements(corp.code, period.year, period.code, "OFS", force, requestKey);
-      if (fallback) return { period, rows: fallback, fs: "OFS" as const };
-    }
+
   }
   return null;
 }
@@ -1098,9 +1091,9 @@ async function disclosureText(rceptNo: string, requestKey?: string): Promise<str
  * 당기/누계 열과 표 단위가 확인되는 동일 표 안에서 합계 계정 또는 감가상각+무형자산상각을
  * 모두 찾은 경우에만 결과를 반환합니다. 열·단위가 모호하거나 서로 다른 표의 값만 존재하면 추정하지 않습니다.
  */
-async function depreciationFromDisclosure(rceptNo: string, period: Period, requestKey?: string): Promise<{ value: number; lines: string[] } | null> {
+async function depreciationFromDisclosure(rceptNo: string, period: Period, requestKey?: string, basis?:"CFS"|"OFS"): Promise<{ value: number; lines: string[] } | null> {
   const entries = await disclosureEntries(rceptNo, requestKey).catch(() => []);
-  const parsed = parseDepreciationFromDisclosure(entries, period);
+  const parsed = parseDepreciationFromDisclosure(entries, period, basis);
   return parsed ? { value: parsed.value, lines: parsed.lines } : null;
 }
 
@@ -1109,6 +1102,12 @@ async function depreciationFromDisclosure(rceptNo: string, period: Period, reque
  * 총차입금/의존도는 DART 원문 주석의 리스부채 보정을 적용하고, EBITDA 본문 값이 없을 때는
  * 같은 접수번호의 주석에서 상각비를 확인해 계산합니다. 미확인 값을 0으로 대체하지 않습니다.
  */
+function missingMetricReason(rows:Row[], metric:FinancialMetric):string {
+  const required=metric==="operatingMargin" ? ["매출액","영업이익"] : metric==="netMargin" ? ["매출액","당기순이익"] : [METRIC_LABELS[metric]];
+  const note=rows.find(row=>row.recovery_note)?.recovery_note;
+  return `${required.join("·")}의 같은 기간 원천 계정/유효 금액을 확인하지 못했습니다. 회사가 공시하지 않았다는 뜻은 아닙니다.${note ? " "+note : ""}`;
+}
+
 async function pickMetricWithOriginalFallback(args: {
   corp: Corp & { name: string };
   rows: Row[];
@@ -1131,7 +1130,7 @@ async function pickMetricWithOriginalFallback(args: {
   if (metric === "ebitda" && (!picked || !Number.isFinite(picked.value))) {
     const operatingProfit = pickMetric(rows, period, "operatingProfit");
     if (operatingProfit && Number.isFinite(operatingProfit.value) && /^\d{14}$/.test(rceptNo)) {
-      const depreciation = await depreciationFromDisclosure(rceptNo, period, requestKey);
+      const depreciation = await depreciationFromDisclosure(rceptNo, period, requestKey,basis);
       if (depreciation && Number.isFinite(depreciation.value)) {
         const value = operatingProfit.value + depreciation.value;
         picked = {
@@ -1306,13 +1305,14 @@ function historyReportIsDue(year: number, key: HistoryReportKey, now = new Date(
   return false;
 }
 
-async function loadHistoryRows(corp: { code: string }, basis: "CFS" | "OFS", requestKey?: string) {
-  const currentYear = new Date().getFullYear();
+async function loadHistoryRows(corp: { code: string }, basis: "CFS" | "OFS", requestKey?: string, startYear = new Date().getFullYear()-2, endYear = new Date().getFullYear()) {
+  const currentYear = Math.min(endYear,new Date().getFullYear());
   const failures: string[] = [];
+  const published = await latestPublishedPeriods(corp.code,requestKey).catch(()=>[]);
   const jobs: Array<{ year: number; key: HistoryReportKey; code: string }> = [];
-  for (let year = 2015; year <= currentYear; year++) {
+  for (let year = Math.max(2015,startYear); year <= currentYear; year++) {
     for (const report of HISTORY_REPORTS) {
-      if (historyReportIsDue(year, report.key)) jobs.push({ year, key: report.key, code: report.code });
+      if (historyReportIsDue(year, report.key) || published.some(p=>p.year===year && p.kind===report.kind)) jobs.push({ year, key: report.key, code: report.code });
     }
   }
   const loaded = await mapWithConcurrency(jobs, 5, async (job) => {
@@ -1328,7 +1328,7 @@ async function loadHistoryRows(corp: { code: string }, basis: "CFS" | "OFS", req
     }
   });
   const yearRows = new Map<number, Record<HistoryReportKey, Row[] | null>>();
-  for (let year = 2015; year <= currentYear; year++) {
+  for (let year = Math.max(2015,startYear); year <= currentYear; year++) {
     yearRows.set(year, { q1: null, half: null, q3: null, annual: null });
   }
   for (const item of loaded) yearRows.get(item.year)![item.key] = item.rows;
@@ -1338,9 +1338,11 @@ async function loadHistoryRows(corp: { code: string }, basis: "CFS" | "OFS", req
 function historyValues(rows: Row[] | null, year: number, kind: HistoryReportKey) {
   if (!rows) return null;
   const period = P(year, kind, "cum");
-  const revenue = pickMetric(rows, period, "revenue")?.value;
-  const operatingProfit = pickMetric(rows, period, "operatingProfit")?.value;
-  const netIncome = pickMetric(rows, period, "netIncome")?.value;
+  const pair=pairedIncome(rows,period,metricConfig.operatingProfit.names);
+  if(!pair)return null;
+  const revenue = pair.rev;
+  const operatingProfit = pair.value;
+  const netIncome = pickMetric(rows.filter(row=>row.sj_div===pair.revenue.sj_div), period, "netIncome")?.value;
   return Number.isFinite(revenue) && Number.isFinite(operatingProfit)
     ? { revenue: revenue!, operatingProfit: operatingProfit!, ...(Number.isFinite(netIncome) ? { netIncome: netIncome! } : {}) }
     : null;
@@ -1372,46 +1374,27 @@ function pointsFromHistoryRows(yearRows: Map<number, Record<HistoryReportKey, Ro
   return points;
 }
 
-async function quarterlyHistory(corp: { code: string }, preferredFs: "CFS" | "OFS", requestKey?: string) {
+async function quarterlyHistory(corp: { code: string }, preferredFs: "CFS" | "OFS", requestKey?: string, startYear = new Date().getFullYear()-2, endYear = new Date().getFullYear()) {
   if (preferredFs === "OFS") {
-    const loaded = await loadHistoryRows(corp, "OFS", requestKey);
+    const loaded = await loadHistoryRows(corp, "OFS", requestKey,startYear,endYear);
     return historyResponseShape(pointsFromHistoryRows(loaded.rows, "OFS"), loaded.failures);
   }
 
-  // CFS/OFS를 병렬로 조회하되 filingInFlight가 같은 보고서의 공시목록 호출을 합칩니다.
-  // 두 기준을 순차로 기다려 보고서 생성이 45초 이상 지연되는 일을 방지합니다.
-  const [primaryLoaded, separateLoaded] = await Promise.all([
-    loadHistoryRows(corp, "CFS", requestKey),
-    loadHistoryRows(corp, "OFS", requestKey),
-  ]);
-  const primaryPoints = pointsFromHistoryRows(primaryLoaded.rows, "CFS");
-  const separatePoints = pointsFromHistoryRows(separateLoaded.rows, "OFS");
-  if (primaryPoints.length < 4 && separatePoints.length > primaryPoints.length) {
-    return historyResponseShape(separatePoints, [...primaryLoaded.failures, ...separateLoaded.failures]);
-  }
-  if (primaryPoints.length < 4) {
-    return historyResponseShape(primaryPoints, [...primaryLoaded.failures, ...separateLoaded.failures]);
-  }
-  for (const point of primaryPoints) {
-    const separate = separatePoints.find((candidate) => candidate.period === point.period);
-    if (separate) {
-      (point as any).separateOperatingProfit = separate.operatingProfit;
-      (point as any).subsidiaryAndAdjProfit = point.operatingProfit - separate.operatingProfit;
-    }
-  }
-  return historyResponseShape(primaryPoints, [...primaryLoaded.failures, ...separateLoaded.failures]);
+  const loaded=await loadHistoryRows(corp,preferredFs,requestKey,startYear,endYear);
+  return historyResponseShape(pointsFromHistoryRows(loaded.rows,preferredFs),loaded.failures);
 }
 
 /** 분기 시계열은 기본 스냅샷과 독립적으로 조회·캐시하여 차트가 화면 로딩을 무기한 막지 않도록 합니다. */
-export async function historyDart(companyName: string, requestKey?: string) {
+export async function historyDart(companyName: string, requestKey?: string, basis: "CFS" | "OFS" = "CFS", startYear = new Date().getFullYear()-2, endYear = new Date().getFullYear()) {
+  if(startYear>endYear || endYear-startYear>2)throw new TRPCError({code:"BAD_REQUEST",message:"분기 이력은 요청당 최대 3개년씩 조회해 주세요."});
   const map = await corps(false, requestKey);
   const corp = findCorp(companyName, map);
   if (!corp) throw new TRPCError({ code: "NOT_FOUND", message: `DART 기업목록에서 찾지 못했습니다: ${companyName}` });
-  const cacheKey = `${corp.code}:${requestKey?.slice(-6) ?? "server-key"}`;
+  const cacheKey = `${corp.code}:${basis}:${startYear}:${endYear}:${createHash("sha256").update(key(requestKey)).digest("hex")}`;
   const cached = historyCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < 10 * 60_000) return {
+  if (cached && Date.now() - cached.at < 60_000) return {
     found: true as const, company: corp.name, corpCode: corp.code,
-    basisCode: cached.value.points[0]?.basisCode ?? "CFS", quarterlyHistory: cached.value.points,
+    basisCode: cached.value.points[0]?.basisCode ?? basis, quarterlyHistory: cached.value.points, failures:cached.value.failures,
     count: cached.value.points.length, message: cached.value.points.length
       ? `실제 공시로 분기 ${cached.value.points.length}개를 구성했습니다.`
       : cached.value.failures.length ? `분기 조회 실패: ${cached.value.failures.slice(0, 3).join(" / ")}` : "조회 가능한 실제 분기 공시에서 매출·영업이익 계정을 확인하지 못했습니다.",
@@ -1421,20 +1404,20 @@ export async function historyDart(companyName: string, requestKey?: string) {
     const value = await pending;
     return {
       found: true as const, company: corp.name, corpCode: corp.code,
-      basisCode: value.points[0]?.basisCode ?? "CFS", quarterlyHistory: value.points,
+      basisCode: value.points[0]?.basisCode ?? basis, quarterlyHistory: value.points,failures:value.failures,
       count: value.points.length, message: value.points.length
         ? `실제 공시로 분기 ${value.points.length}개를 구성했습니다.`
         : value.failures.length ? `분기 조회 실패: ${value.failures.slice(0, 3).join(" / ")}` : "조회 가능한 실제 분기 공시에서 매출·영업이익 계정을 확인하지 못했습니다.",
     };
   }
-  const request = quarterlyHistory(corp, "CFS", requestKey);
+  const request = quarterlyHistory(corp, basis, requestKey, startYear, endYear);
   historyInFlight.set(cacheKey, request);
   try {
     const value = await request;
     if (value.points.length) historyCache.set(cacheKey, { at: Date.now(), value });
     return {
       found: true as const, company: corp.name, corpCode: corp.code,
-      basisCode: value.points[0]?.basisCode ?? "CFS", quarterlyHistory: value.points,
+      basisCode: value.points[0]?.basisCode ?? basis, quarterlyHistory: value.points,failures:value.failures,
       count: value.points.length, message: value.points.length
         ? `실제 공시로 분기 ${value.points.length}개를 구성했습니다.`
         : value.failures.length ? `분기 조회 실패: ${value.failures.slice(0, 3).join(" / ")}` : "조회 가능한 실제 분기 공시에서 매출·영업이익 계정을 확인하지 못했습니다.",
@@ -1445,6 +1428,8 @@ export async function historyDart(companyName: string, requestKey?: string) {
 }
 
 export async function clearDartCaches() {
+  latestPeriodsCache.clear();
+  recentCache.clear();
   corpCache = null;
   stmtCache.clear();
   filingCache.clear();
@@ -1462,29 +1447,31 @@ export async function searchDartCompanies(query: string, limit = 12, requestKey?
 }
 
 /** 등록 기업의 신규 공시 확인. DART list.json의 실제 접수번호만 반환합니다. */
-export async function recentFilingsDart(companyNames: string[], fromDate: string, requestKey?: string) {
+export async function recentFilingsDart(companyNames: string[], fromDate: string, requestKey?: string, requestedEndDate?: string) {
   if (!/^\d{8}$/.test(fromDate)) throw new TRPCError({ code: "BAD_REQUEST", message: "조회 시작일은 YYYYMMDD 형식이어야 합니다." });
-  const today = new Date();
-  const endDate = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+  const endDate = requestedEndDate ?? new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()).replace(/-/g, "");
   const map = await corps(false, requestKey);
   const names = [...new Set(companyNames.map((name) => name.trim()).filter(Boolean))];
+  if(names.length>20)throw new TRPCError({code:"BAD_REQUEST",message:"관심기업은 최대 20개까지 가능합니다."});
   const results = await mapWithConcurrency(names, 3, async (requested) => {
-    const corp = findCorp(requested, map);
-    if (!corp) return { rows: [] as Array<{ company: string; reportName: string; receiptDate: string; rceptNo: string; url: string }>, warning: `${requested}: DART 기업코드 미확인` };
-    const params = new URLSearchParams({ crtfc_key: key(requestKey), corp_code: corp.code, bgn_de: fromDate, end_de: endDate, page_no: "1", page_count: "100", sort: "date", sort_mth: "desc" });
-    try {
-      const response = await dartFetch(`${BASE}/list.json?${params}`, {}, 8_000);
-      if (!response.ok) return { rows: [], warning: `${corp.name}: DART HTTP ${response.status}` };
-      const json = await response.json() as { status: string; message?: string; list?: DartFiling[] };
-      if (json.status === "013") return { rows: [], warning: null };
-      if (json.status !== "000") return { rows: [], warning: `${corp.name}: DART 상태 ${json.status} ${json.message ?? "공시 조회 실패"}` };
-      const rows = (json.list ?? []).filter((item) => /^\d{14}$/.test(item.rcept_no ?? "") && (item.rcept_dt ?? "") >= fromDate && (item.rcept_dt ?? "") <= endDate)
-        .map((item) => ({ company: corp.name, reportName: item.report_nm, receiptDate: item.rcept_dt, rceptNo: item.rcept_no, url: `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${item.rcept_no}` }));
-      return { rows, warning: null };
-    } catch (error) {
-      return { rows: [], warning: `${corp.name}: ${error instanceof Error ? error.message : "네트워크 조회 실패"}` };
-    }
+    const corp=findCorp(requested,map);
+    if(!corp)return {rows:[],warning:`${requested}: DART 기업코드 미확인`} as RecentResult;
+    const cacheId=`${createHash("sha256").update(key(requestKey)).digest("hex")}:${corp.code}:${fromDate}:${endDate}`;
+    const cached=recentCache.get(cacheId);
+    if(cached && Date.now()-cached.at<15_000)return cached.value;
+    const pending=recentInFlight.get(cacheId);if(pending)return pending;
+    const load=async():Promise<RecentResult>=>{
+      try{
+        const list=await filingPages(corp.code,fromDate,endDate,requestKey);
+        const rows=[...new Map(list.filter(item=>/^\d{14}$/.test(item.rcept_no ?? "") && item.rcept_dt>=fromDate && item.rcept_dt<=endDate).map(item=>[item.rcept_no,{company:corp.name,reportName:item.report_nm,receiptDate:item.rcept_dt,rceptNo:item.rcept_no,url:`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${item.rcept_no}`}])).values()];
+        return {rows,warning:null};
+      }catch(error){return {rows:[],warning:`${corp.name}: ${error instanceof Error ? error.message : "조회 실패"}`};}
+    };
+    const request=load();recentInFlight.set(cacheId,request);
+    try{const value=await request;if(!value.warning){if(recentCache.size>=256)recentCache.delete(recentCache.keys().next().value!);recentCache.set(cacheId,{at:Date.now(),value});}return value;}
+    finally{if(recentInFlight.get(cacheId)===request)recentInFlight.delete(cacheId);}
   });
+
   return {
     rows: results.flatMap((result) => result.rows).sort((a, b) => b.receiptDate.localeCompare(a.receiptDate) || b.rceptNo.localeCompare(a.rceptNo)),
     warnings: results.map((result) => result.warning).filter((warning): warning is string => Boolean(warning)),
@@ -1495,12 +1482,19 @@ export async function recentFilingsDart(companyNames: string[], fromDate: string
 }
 
 export async function snapshotDart(companyName: string, force = false, requestKey?: string, includeHistory = false, requestedBasis: "CFS" | "OFS" = "CFS") {
-  const map = await corps(force, requestKey);
+  const map = await corps(false, requestKey);
   const corp = findCorp(companyName, map);
   if (!corp) throw new TRPCError({ code: "NOT_FOUND", message: `DART 기업목록에서 찾지 못했습니다: ${companyName}` });
 
   // 최신 보고서를 우선 조회하고, 해당 기업에 최신 정기보고서가 없으면 DART 공개 이력(2015년~)의 연간 보고서까지 역탐색합니다.
-  const currentCandidates = periodCandidates("");
+  if(force){
+    for(const k of stmtCache.keys())if(k.startsWith(`${corp.code}-`))stmtCache.delete(k);
+    for(const k of filingCache.keys())if(k.startsWith(`${corp.code}-`))filingCache.delete(k);
+    for(const k of historyCache.keys())if(k.startsWith(`${corp.code}:`))historyCache.delete(k);
+    latestPeriodsCache.delete(corp.code);
+  }
+  const published = await latestPublishedPeriods(corp.code,requestKey,force);
+  const currentCandidates = published.length ? published : periodCandidates("");
   const seenPeriods = new Set(currentCandidates.map((p) => `${p.year}:${p.kind}:${p.mode}`));
   const fallbackAnnuals = Array.from({ length: Math.max(0, new Date().getFullYear() - 2015) }, (_, i) => P(new Date().getFullYear() - 1 - i, "annual", "cum"))
     .filter((p) => !seenPeriods.has(`${p.year}:${p.kind}:${p.mode}`));
@@ -1519,9 +1513,10 @@ export async function snapshotDart(companyName: string, force = false, requestKe
           citation: citation(periodLabel(period), picked.sourceHeading, rcept),
           available: Number.isFinite(picked.value),
           lines: picked.lines,
+          ...(picked.partialValue !== undefined ? {partialValue:picked.partialValue,missingComponents:picked.missingComponents} : {}),
           disclaimer: picked.disclaimer,
         }
-      : null;
+      : {value:null,unit:["operatingMargin","netMargin","borrowingsRatio","debtRatio","currentRatio","roe","roa"].includes(metric) ? "%" : "억원",formula:null,citation:citation(periodLabel(period),"원천 계정 확인 필요",rcept),available:false,lines:[],disclaimer:missingMetricReason(rows,metric)};
   });
   // EBITDA 본문 계정이 확정되지 않으면 실제 접수번호의 첨부 주석 표를 추가로 확인합니다.
   // 당기 열과 단위가 모호한 주석 값은 사용하지 않습니다.
@@ -1534,7 +1529,7 @@ export async function snapshotDart(companyName: string, force = false, requestKe
         lines: [], disclaimer: "같은 공시에서 영업이익 원천 계정을 확인하지 못해 EBITDA를 계산할 수 없습니다. 다른 기간의 영업이익으로 대체하지 않았습니다.",
       };
     } else {
-      const noteDepreciation = /^\d{14}$/.test(rcept) ? await depreciationFromDisclosure(rcept, period, requestKey) : null;
+      const noteDepreciation = /^\d{14}$/.test(rcept) ? await depreciationFromDisclosure(rcept, period, requestKey,fs) : null;
       if (noteDepreciation) {
         const value = operatingProfit.value + noteDepreciation.value;
         metrics.ebitda = {
@@ -1562,7 +1557,7 @@ export async function snapshotDart(companyName: string, force = false, requestKe
     const corrected = await withDartLeaseFallback({ corp: { name: corp.name, code: corp.code, stock: corp.stock }, rows, period, basis: fs, metric, picked: pickedForCorrection, rceptNo: rcept, requestKey });
     if (corrected.url) leaseFallbackUrl = corrected.url;
     if (corrected.picked && Number.isFinite(corrected.picked.value)) {
-      metrics[metric] = { ...(existing ?? { value: null, unit: corrected.picked.unit, formula: corrected.picked.formula, citation: citation(periodLabel(period), corrected.picked.sourceHeading, rcept), available: false }), value: corrected.picked.value, unit: corrected.picked.unit, formula: corrected.picked.formula, lines: corrected.picked.lines, disclaimer: corrected.picked.disclaimer, citation: `${citation(periodLabel(period), corrected.picked.sourceHeading, rcept)}${corrected.url ? ` · ${corrected.url}` : ""}`, available: true };
+      metrics[metric] = { ...(existing ?? { value: null, unit: corrected.picked.unit, formula: corrected.picked.formula, citation: citation(periodLabel(period), corrected.picked.sourceHeading, rcept), available: false }), value: corrected.picked.value, unit: corrected.picked.unit, formula: corrected.picked.formula, lines: corrected.picked.lines, disclaimer: corrected.picked.disclaimer, citation: pickedCitation(period,corrected.picked,rows,corrected.url), available: true };
     } else if (existing && corrected.picked?.disclaimer) {
       metrics[metric] = { ...existing, disclaimer: corrected.picked.disclaimer };
     }
@@ -1616,11 +1611,14 @@ export async function snapshotDart(companyName: string, force = false, requestKe
         ? "일부 지표는 같은 기간·회계기준의 보조자료를 찾지 못했습니다."
         : "조회 가능한 보조자료와 DART 원천값의 값이 허용 범위 안에 있습니다.",
   };
+  const currentFiling=await filingForPeriod(corp.code,period.year,period.code,requestKey);
+  const amendmentPending=Boolean(currentFiling && currentFiling.rceptNo!==rcept);
   return {
+    amendmentPending, dataNotice:amendmentPending ? "공시 목록의 최신 정정 보고서가 재무 API에 아직 반영되지 않았습니다. 표시 접수번호의 자료를 확인하세요." : "",
     found: true as const, company: corp.name, corpCode: corp.code, stockCode: corp.stock,
     period: `${periodLabel(period)} · ${modeLabel(period)} · 기준일 ${baseDate(period)}`,
     periodKind: period.kind, periodMode: period.mode, periodYear: period.year, basis: fsLabel(fs), basisCode: fs,
-    metrics, crossValidation: externalValidation, validationSummary, externalLeaseFallbackUrl: leaseFallbackUrl, rawAccountMetrics: pickRawAccountMetrics(rows, period, rcept), rawRows: rows, rceptNo: rcept, reportName: (await filingForPeriod(corp.code, period.year, period.code, requestKey))?.reportName ?? periodLabel(period),
+    metrics, crossValidation: externalValidation, validationSummary, externalLeaseFallbackUrl: leaseFallbackUrl, rawAccountMetrics: pickRawAccountMetrics(rows, period, rcept), rawRows: rows, rceptNo: rcept, reportName: currentFiling?.rceptNo === rcept ? currentFiling.reportName : periodLabel(period),
     quarterlyHistory: quarterHistory, refreshedAt: new Date().toISOString(),
   };
 }
@@ -1632,11 +1630,13 @@ export type CompareInput = {
   period: Kind | "latest" | "h2";
   basis: "CFS" | "OFS";
   force?: boolean;
+  includeValidation?: boolean;
 };
 
 export async function compareDart(input: CompareInput, requestKey?: string) {
   const map = await corps(Boolean(input.force), requestKey);
-  const uniqueNames = [...new Set(input.companies)].slice(0, 8);
+  if (new Set(input.companies).size > 10) throw new TRPCError({code:"BAD_REQUEST", message:"비교 기업은 최대 10개까지 가능합니다."});
+  const uniqueNames = [...new Set(input.companies)];
   const resultRows = [] as Array<{
     company: string;
     found: boolean;
@@ -1696,9 +1696,9 @@ export async function compareDart(input: CompareInput, requestKey?: string) {
       resultRows.push({ company: corp.name, found: true, value: picked.value, unit: picked.unit, period: `${year}년 하반기(연간−상반기)`, basis: fsLabel(pair.fs), rceptNo: annualRcept || undefined, citation: `연간 접수번호 ${annualRcept || "미확인"}; 상반기 접수번호 ${halfRcept || "미확인"}`, formula: picked.formula });
       continue;
     }
-    const resolved = await resolvePeriod(corp, periodFromFilters(input.year, input.period), input.basis, Boolean(input.force), requestKey);
+    const resolved = await resolvePeriod(corp, (input.period === "latest" ? await latestPublishedPeriods(corp.code,requestKey,Boolean(input.force)) : periodFromFilters(input.year, input.period)), input.basis, Boolean(input.force), requestKey);
     if (!resolved) {
-      resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: "", basis: fsLabel(input.basis), message: "선택한 기간의 공시가 없습니다." });
+      resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: "", basis: fsLabel(input.basis), message: "선택한 기간·회계기준의 DART 전체 재무제표와 주요계정 API에서 값을 확인하지 못했습니다. 보고서 원문이 없다는 뜻은 아닙니다." });
       continue;
     }
     const rcept = resolved.rows.find((r) => r.rcept_no)?.rcept_no ?? "";
@@ -1707,11 +1707,11 @@ export async function compareDart(input: CompareInput, requestKey?: string) {
     if (!picked || !Number.isFinite(picked.value)) {
       const fallback = await externalFallbackForMetric({ name: corp.name, stock: corp.stock }, input.metric, resolved.period, resolved.fs);
       if (fallback) resultRows.push({ company: corp.name, found: true, value: fallback.value, unit: fallback.unit, period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)} · 네이버 금융`, basis: fsLabel(resolved.fs), citation: `${fallback.source} (${fallback.url})`, message: "DART 원천 계정이 없어 외부 출처 값을 보조 표시합니다.", crossValidation: fallback.validation, source: fallback.source === "FnGuide" ? "FNGUIDE" : "NAVER_FINANCE" });
-      else resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)}`, basis: fsLabel(resolved.fs), rceptNo: rcept || undefined, message: picked?.disclaimer ?? `${METRIC_LABELS[input.metric]} 계정 또는 계산 구성 계정을 확인할 수 없습니다.` });
+      else resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)}`, basis: fsLabel(resolved.fs), rceptNo: rcept || undefined, message: picked?.disclaimer ?? missingMetricReason(resolved.rows,input.metric) });
       continue;
     }
     const finalPicked = picked;
-    const leaseFallbackUrl: string | null = null;
+    const leaseFallbackUrl: string | null = selected.url;
     resultRows.push({
       company: corp.name,
       found: true,
@@ -1720,16 +1720,17 @@ export async function compareDart(input: CompareInput, requestKey?: string) {
       period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)}`,
       basis: fsLabel(resolved.fs),
       rceptNo: rcept || undefined,
-      citation: `${citation(periodLabel(resolved.period), finalPicked.sourceHeading, rcept)}${leaseFallbackUrl ? ` · 리스부채 상세: ${leaseFallbackUrl}` : ""}`,
+      citation: pickedCitation(resolved.period,finalPicked,resolved.rows,leaseFallbackUrl),
       formula: finalPicked.formula,
       validationPeriod: resolved.period,
-      source: "DART",
+      source: /FnGuide/.test(finalPicked.sourceHeading) ? "FNGUIDE" : /네이버 금융/.test(finalPicked.sourceHeading) ? "NAVER_FINANCE" : "DART",
     });
   }
 
   // 비교표의 각 값에 동일 기간 네이버 금융 수치와 출처 정보를 연결합니다. 하반기(연간-상반기) 파생값은
   // 외부 출처의 개별 분기 데이터로 동일 구간을 재구성할 수 없으면 검증 불가로 표시합니다.
   const validationMap = await mapWithConcurrency(resultRows, 3, async (row) => {
+    if (input.includeValidation === false) return row;
     if (!row.found || row.value === null || !Number.isFinite(row.value) || row.source === "NAVER_FINANCE" || row.source === "FNGUIDE") return row;
     const corp = findCorp(row.company, map);
     const rowBasis: "CFS" | "OFS" = /별도/.test(row.basis) ? "OFS" : input.basis;
@@ -1797,7 +1798,7 @@ type HalfYearPair = { annualPeriod: Period; halfPeriod: Period; annualRows: Row[
 
 async function halfYearPair(corp: { code: string }, year: number, preferredFs: "CFS" | "OFS", requestKey?: string): Promise<HalfYearPair | null> {
   // 같은 회사·같은 회계 기준의 연간 누계와 상반기 누계가 모두 존재해야만 차감합니다.
-  const order: Array<"CFS" | "OFS"> = preferredFs === "CFS" ? ["CFS", "OFS"] : ["OFS", "CFS"];
+  const order: Array<"CFS" | "OFS"> = [preferredFs];
   for (const basis of order) {
     const annualPeriod = P(year, "annual", "cum");
     const halfPeriod = P(year, "half", "cum");
@@ -1824,6 +1825,7 @@ function secondHalfPicked(pair: HalfYearPair, metric: FinancialMetric): PickedMe
     };
   }
   if (metric === "operatingMargin" || metric === "netMargin") {
+    if(!a || !h)return null;
     const revA = pickMetric(pair.annualRows, pair.annualPeriod, "revenue");
     const revH = pickMetric(pair.halfRows, pair.halfPeriod, "revenue");
     const profitMetric: FinancialMetric = metric === "operatingMargin" ? "operatingProfit" : "netIncome";
@@ -1855,9 +1857,13 @@ async function askDartCore(question: string, requestKey?: string) {
     notice = `질문에 기업명이 없어 기본 기업(${DEFAULT_COMPANY})으로 조회했습니다.`;
   }
 
+  const publishedCandidates = !parsed.explicitPeriod ? await latestPublishedPeriods(corp.code,requestKey) : [];
+  const scopedPublished = parsed.years.length === 1 ? publishedCandidates.filter(p=>p.year === parsed.years[0]) : publishedCandidates;
+  const queryCandidates = !parsed.explicitPeriod && (!parsed.years.length || /올해|금년|당해연도/.test(question)) && scopedPublished.length ? scopedPublished : periodCandidates(question);
   const fs = parsed.basis;
   const metrics = parsed.metrics;
-  const requestedYears = parsed.years;
+  const relativeComparison = !/20\d{2}/.test(question) && /올해|금년|당해연도/.test(question) && /작년|지난해|전년도/.test(question);
+  const requestedYears = relativeComparison ? [] : parsed.years;
   if (!metrics.length && !parsed.directAccount) return fail(`질문에서 조회할 재무지표를 인식하지 못했습니다. 재무 용어의 정확한 명칭을 사용해 주세요.`);
   if (metrics.includes("per") || metrics.includes("pbr")) return fail(`PER/PBR은 현재 연결된 OpenDART 재무제표만으로는 현재 주가 데이터가 없어 계산하지 않습니다. 주가 데이터 연결 후 제공할 수 있습니다.`);
   if (/하반기/.test(question)) {
@@ -1933,7 +1939,7 @@ async function askDartCore(question: string, requestKey?: string) {
   // 재무상태표/손익계산서/현금흐름표에 실제 계정명이 존재하는 경우에는
   // 임의의 다른 지표(예: 매출액)로 대체하지 않고 해당 계정만 정확히 찾습니다.
   if (parsed.directAccount && !metrics.length) {
-    const candidates = parsed.kind && parsed.kind !== "latest" ? [P(parsed.yearEnd ?? parsed.years.at(-1) ?? new Date().getFullYear(), parsed.kind, parsed.mode ?? "cum")] : periodCandidates(question);
+    const candidates = parsed.kind && parsed.kind !== "latest" ? [P(parsed.yearEnd ?? parsed.years.at(-1) ?? new Date().getFullYear(), parsed.kind, parsed.mode ?? "cum")] : queryCandidates;
     if (!candidates.length) return fail(`${corp.name}의 요청 기간을 해석할 수 없습니다.`);
     const baseResolved = await resolvePeriod(corp, candidates, fs, false, requestKey);
     if (!baseResolved) return fail(`${corp.name}의 ${parsed.directAccount}을(를) 찾을 수 있는 보고서를 찾지 못했습니다.`);
@@ -2016,22 +2022,25 @@ async function askDartCore(question: string, requestKey?: string) {
       basis?: string;
       values: Record<string, number | null>;
       units: Record<string, string>;
+      sources: Record<string,string>;
       found: boolean;
       message?: string;
     }> = [];
 
     for (const requestedPeriod of periods) {
       // 연도마다 요청 기준을 우선 조회하고, CFS가 없는 해에만 OFS로 재시도해 과거 공시 누락을 줄입니다.
-      const resolvedYear = await resolvePeriod(corp, [requestedPeriod], historyFs, false, requestKey);
+      const resolvedYear = await statements(corp.code,requestedPeriod.year,requestedPeriod.code,historyFs,false,requestKey).then(rows=>rows ? {period:requestedPeriod,rows,fs:historyFs} : null);
       const period = resolvedYear?.period ?? requestedPeriod;
       const rows = resolvedYear?.rows ?? null;
       const actualBasis = resolvedYear?.fs ?? historyFs;
       const values: Record<string, number | null> = {};
       const units: Record<string, string> = {};
+      const sources: Record<string,string> = {};
       let found = false;
       for (const metric of metrics) {
         const result = rows ? await pickMetricWithOriginalFallback({ corp, rows, period, basis: actualBasis, metric, requestKey }) : null;
         const picked = result?.picked ?? null;
+        sources[metric] = rows ? pickedCitation(period,picked,rows,result?.url) : "출처 미확인";
         values[metric] = picked && Number.isFinite(picked.value) ? picked.value : null;
         units[metric] = picked?.unit ?? (["operatingMargin", "netMargin", "debtRatio", "currentRatio", "roe", "roa"].includes(metric) ? "%" : "억원");
         if (picked && Number.isFinite(picked.value)) found = true;
@@ -2043,6 +2052,7 @@ async function askDartCore(question: string, requestKey?: string) {
         basis: fsLabel(actualBasis),
         values,
         units,
+        sources,
         found,
         message: !rows ? "해당 보고서가 없습니다." : !found ? `${metrics.map((m) => METRIC_LABELS[m]).join(", ")} 계정을 찾지 못했습니다.` : undefined,
       });
@@ -2074,7 +2084,7 @@ async function askDartCore(question: string, requestKey?: string) {
     }) : [];
 
     const series = metrics.length === 1
-      ? matrix.map((row) => ({ year: row.year, period: row.period, mode: row.mode, value: row.values[primary], unit: row.units[primary], found: row.values[primary] !== null && Number.isFinite(row.values[primary]), message: row.message }))
+      ? matrix.map((row) => ({ year: row.year, period: row.period, mode: row.mode, value: row.values[primary], unit: row.units[primary], citation:row.sources[primary], basis:row.basis, found: row.values[primary] !== null && Number.isFinite(row.values[primary]), message: row.message }))
       : undefined;
 
     return {
@@ -2113,15 +2123,17 @@ async function askDartCore(question: string, requestKey?: string) {
   // 여러 지표만 나열한 질의는 같은 최신 보고기간의 값을 한 행에 묶습니다.
   // 연도 비교를 요청하지 않았는데 매출·영업이익을 임의로 전년 비교로 바꾸지 않습니다.
   if (metrics.length >= 2 && requestedYears.length < 2 && !parsed.recentYears && parsed.yearStart === null && parsed.analysis !== "cause" && !/(올해.*(?:작년|지난해)|(?:작년|지난해).*올해|전년대비|작년보다|지난해보다)/.test(question)) {
-    const resolved = await resolvePeriod(corp, periodCandidates(question), fs, false, requestKey);
+    const resolved = await resolvePeriod(corp, queryCandidates, fs, false, requestKey);
     if (!resolved) return fail(`${corp.name}의 최신 공시 재무제표를 찾을 수 없습니다.`);
     const effectiveFs = resolved.fs;
     const values: Record<string, number | null> = {};
     const units: Record<string, string> = {};
+    const sources: Record<string,string> = {};
     const missing: string[] = [];
     for (const metric of metrics) {
       const result = await pickMetricWithOriginalFallback({ corp, rows: resolved.rows, period: resolved.period, basis: resolved.fs, metric, requestKey });
       const picked = result.picked;
+      sources[metric] = pickedCitation(resolved.period,picked,resolved.rows,result.url);
       values[metric] = picked && Number.isFinite(picked.value) ? picked.value : null;
       units[metric] = picked?.unit ?? (["operatingMargin", "netMargin", "debtRatio", "currentRatio", "roe", "roa"].includes(metric) ? "%" : "억원");
       if (!picked || !Number.isFinite(picked.value)) missing.push(METRIC_LABELS[metric]);
@@ -2137,7 +2149,7 @@ async function askDartCore(question: string, requestKey?: string) {
       metric: metrics.map((metric) => METRIC_LABELS[metric]).join(" · "),
       headline: metrics.map((metric) => `${METRIC_LABELS[metric]} ${values[metric] === null ? "자료 없음" : formatMetricValue(values[metric]!, units[metric])}`).join(" / "),
       lines: ["요청한 지표를 동일 보고기간 기준으로 조회했습니다.", ...(missing.length ? [`자료를 찾지 못한 지표: ${missing.join(", ")}`] : [])],
-      matrix: [{ year: resolved.period.year, period: periodLabel(resolved.period), mode: modeLabel(resolved.period), values, units, found: missing.length < metrics.length }],
+      matrix: [{ year: resolved.period.year, period: periodLabel(resolved.period), mode: modeLabel(resolved.period), basis:fsLabel(resolved.fs), values, units, sources, found: missing.length < metrics.length }],
       formula: null,
       citation: citation(periodLabel(resolved.period), `재무제표 > ${metrics.map((metric) => METRIC_LABELS[metric]).join("·")}`, rcept),
       disclaimer: null,
@@ -2157,13 +2169,13 @@ async function askDartCore(question: string, requestKey?: string) {
       firstPeriod = P(firstYear, kind, parsed.mode ?? "cum");
       secondPeriod = P(secondYear, kind, parsed.mode ?? "cum");
     } else {
-      const latest = await resolvePeriod(corp, periodCandidates(question), fs, false, requestKey);
+      const latest = await resolvePeriod(corp, queryCandidates, fs, false, requestKey);
       if (!latest) return fail(`${corp.name}의 최신 공시 재무제표를 찾을 수 없습니다.`);
       secondPeriod = latest.period;
       firstPeriod = P(latest.period.year - 1, latest.period.kind, latest.period.mode);
     }
     let pair: { firstRows: Row[]; secondRows: Row[]; fs: "CFS" | "OFS" } | null = null;
-    const basisOrder: Array<"CFS" | "OFS"> = fs === "CFS" ? ["CFS", "OFS"] : ["OFS", "CFS"];
+    const basisOrder: Array<"CFS" | "OFS"> = [fs];
     for (const basis of basisOrder) {
       const firstRows = await statements(corp.code, firstPeriod.year, firstPeriod.code, basis, false, requestKey);
       const secondRows = await statements(corp.code, secondPeriod.year, secondPeriod.code, basis, false, requestKey);
@@ -2204,7 +2216,7 @@ async function askDartCore(question: string, requestKey?: string) {
   }
 
   // 3) 단일 숫자 질의.
-  const cands = periodCandidates(question);
+  const cands = queryCandidates;
   if (!cands.length) return fail("하반기만으로는 직접 조회할 수 없습니다. 1분기·반기·3분기·사업보고서 기준으로 질문해 주세요.");
   const resolved = await resolvePeriod(corp, cands, fs, false, requestKey);
   const metric = metrics[0];
@@ -2373,4 +2385,3 @@ function formatMetricValue(value: number, unit: string) {
   // 억원 값은 소수점 첫째 자리까지 보존합니다. 정확한 원 단위 금액은 DART 원문 표에 별도로 남습니다.
   return `${value.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}${unit}`;
 }
-
