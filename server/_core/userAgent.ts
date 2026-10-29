@@ -1,4 +1,5 @@
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import {isAgentTokenRevoked,revokeAgentToken,revocationConfigured} from "./agentRevocation.ts";
 import type { Express, Response } from "express";
 
 // No expiry and no process-local session store. The same secret must survive redeploys.
@@ -41,7 +42,7 @@ export function registerUserAgentRoutes(app: Pick<Express, "get" | "post">, ask:
   const unavailable = (res: Response) => res.status(503).json({found:false,code:"CONNECTION_NOT_CONFIGURED",message:"관리자가 Render 환경변수 AGENT_CONNECTION_SECRET에 32자 이상의 무작위 비밀값을 한 번 설정해야 합니다. 이후 같은 값을 유지하세요."});
   app.get("/api/agent/health", (_req, res) => {
     const configured = !!readEncryptionKey();
-    res.set("Cache-Control","no-store").status(configured ? 200 : 503).json({status:configured ? "ready" : "configuration_required",mode:"user_dart_key_persistent",endpoint:"/api/agent/query",connectPath:"/agent-connect",connectionExpires:false,operatorKeyRequired:false,encryptionSecretConfigured:configured});
+    res.set("Cache-Control","no-store").status(configured ? 200 : 503).json({status:configured ? "ready" : "configuration_required",mode:"user_dart_key_persistent",endpoint:"/api/agent/query",connectPath:"/agent-connect",connectionExpires:false,individualRevocationConfigured:revocationConfigured(),operatorKeyRequired:false,encryptionSecretConfigured:configured});
   });
   app.get("/agent-connect", (_req, res) => {
     res.set("Cache-Control","no-store").set("Referrer-Policy","no-referrer").set("X-Content-Type-Options","nosniff").set("Content-Security-Policy","default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'").type("html").send(CONNECT_HTML);
@@ -54,16 +55,24 @@ export function registerUserAgentRoutes(app: Pick<Express, "get" | "post">, ask:
     if (!validDartKey(dartKey)) return res.status(400).json({message:"본인이 발급받은 OpenDART 인증키 40자리를 입력해 주세요."});
     return res.status(201).json({sessionToken:issueToken(dartKey,encryptionKey),expiresAt:null,message:"만료 없는 연결코드입니다. 안전하게 보관하고 본인의 GPT 대화에 붙여 넣으세요. DART 키의 유효성은 실제 조회 시 확인합니다."});
   });
-  // Explicitly reject the old temporary-session revoke route: no false revocation promise.
-  app.post("/api/agent/session/revoke", (_req, res) => {
-    res.set("Cache-Control","no-store").status(410).json({revoked:false,code:"DART_KEY_ROTATION_REQUIRED",message:"현재 코드는 시간 만료가 없습니다. 완전히 무효화하려면 OpenDART에서 해당 인증키를 폐기·변경하세요. GPT에서 코드를 잊는 것만으로는 무효화되지 않습니다."});
+  app.post("/api/agent/session/revoke", async (req, res) => {
+    res.set("Cache-Control","no-store");
+    const key=readEncryptionKey();if(!key)return unavailable(res);
+    const token=req.body?.sessionToken;
+    if(!resolveToken(token,key))return res.status(401).json({revoked:false,message:"본인의 연결코드 전체를 입력하세요."});
+    if(!limit(createHash("sha256").update(token).digest("hex"),"revoke",10))return res.status(429).json({revoked:false,message:"잠시 후 다시 시도하세요."});
+    if(!revocationConfigured())return res.status(503).json({revoked:false,message:"개별 연결코드 폐기용 영구 저장소가 설정되지 않았습니다. 운영자에게 설정을 요청하거나 OpenDART 인증키를 폐기·변경하세요."});
+    try{await revokeAgentToken(token);return res.json({revoked:true,message:"이 연결코드를 폐기했습니다. 다른 연결코드는 계속 사용할 수 있습니다."});}
+    catch{return res.status(503).json({revoked:false,message:"폐기 기록을 저장하지 못했습니다. 폐기 완료 상태가 아니므로 다시 시도하세요."});}
   });
   app.post("/api/agent/query", async (req, res) => {
     res.set("Cache-Control","no-store");
     const encryptionKey = readEncryptionKey(); if (!encryptionKey) return unavailable(res);
-    if (!limit(req.ip ?? req.socket?.remoteAddress ?? "unknown","query",60)) return res.status(429).set("Retry-After","60").json({found:false,message:"조회 요청이 많습니다. 1분 후 다시 시도해 주세요."});
+    if (!limit(createHash("sha256").update(String(req.body?.sessionToken||req.ip||"unknown")).digest("hex"),"query",60)) return res.status(429).set("Retry-After","60").json({found:false,message:"조회 요청이 많습니다. 1분 후 다시 시도해 주세요."});
     const dartKey = resolveToken(req.body?.sessionToken,encryptionKey);
     if (!dartKey) return res.status(401).json({found:false,code:"CONNECTION_REQUIRED",message:"본인의 연결코드 전체를 확인해 주세요. 이전 1시간짜리 코드는 새 방식과 호환되지 않으므로 /agent-connect에서 새 코드로 한 번 전환해야 합니다. 서버 암호화 비밀값이 변경된 경우에도 새 코드가 필요합니다."});
+    try{if(await isAgentTokenRevoked(req.body.sessionToken))return res.status(401).json({found:false,code:"CONNECTION_REVOKED",message:"폐기된 연결코드입니다. 새 연결코드를 발급받으세요."});}
+    catch{return res.status(503).json({found:false,message:"연결코드 폐기 상태를 확인하지 못했습니다. 잠시 후 재시도하세요."});}
     const question = req.body?.question;
     if (typeof question !== "string" || question.trim().length < 2 || question.trim().length > 300) return res.status(400).json({found:false,message:"question은 2~300자 문자열이어야 합니다."});
     try { return res.json(await ask(question.trim(),dartKey)); }
@@ -72,7 +81,7 @@ export function registerUserAgentRoutes(app: Pick<Express, "get" | "post">, ask:
   return () => attempts.clear();
 }
 
-const CONNECT_HTML = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DART Navigator · 내 인증키 연결</title><style>
+const CONNECT_HTML = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DART FINDER · 내 인증키 연결</title><style>
 body{margin:0;background:#f4f7f6;color:#102a25;font:16px/1.7 system-ui,sans-serif}main{max-width:560px;margin:6vh auto;padding:28px;background:white;border:1px solid #d9e5e0;border-radius:20px}h1{font-size:26px;line-height:1.35}input,textarea,button{box-sizing:border-box;width:100%;font:inherit;border-radius:10px;padding:12px}input,textarea{border:1px solid #a7beb4}button{margin-top:12px;background:#00634a;color:white;border:0;cursor:pointer}button:disabled{opacity:.5}small{color:#52665e}a{color:#00634a}#message{white-space:pre-wrap}#result[hidden]{display:none}@media(max-width:620px){main{margin:16px;padding:22px}}</style></head><body><main>
 <h1>내 DART 인증키로<br>ChatGPT 연결하기</h1>
 <p>본인의 OpenDART 인증키로 만료 없는 연결코드를 만듭니다. 한 번 받은 코드를 보관하면 서버가 재시작되어도 재발급 없이 사용할 수 있습니다.</p>
@@ -81,8 +90,10 @@ body{margin:0;background:#f4f7f6;color:#102a25;font:16px/1.7 system-ui,sans-seri
 <p id="message" role="status"></p><section id="result" hidden><h2>연결코드 보관 후 GPT에 붙여 넣기</h2><textarea id="code" rows="4" readonly aria-label="만료 없는 연결코드"></textarea><button id="copy" type="button">연결코드 복사</button><p><small>만료 시간 없음 · 새 GPT 대화에서는 이 코드를 다시 붙여 넣으면 됩니다. 다시 발급받을 필요는 없습니다. 비밀번호 관리자 등에 보관하세요.</small></p></section>
 <p><small>원본 키를 암호화한 코드입니다. 코드 소지자는 본인의 키로 조회할 수 있으므로 비공개로 보관하세요. 입력한 키와 코드를 이 페이지의 브라우저 저장소나 URL에 저장하지 않습니다. 실제 인증 성공 여부는 첫 조회에서 확인합니다.</small></p>
 <p><small>사용을 완전히 중단하거나 코드가 노출된 경우 OpenDART에서 원본 인증키를 폐기·변경하세요. 서버 운영자가 암호화 비밀값을 바꾸면 기존 코드도 무효화됩니다.</small></p>
+<section><h2>연결코드 폐기</h2><p><small>폐기할 코드만 입력하세요. 영구 저장소가 설정된 서버에서 사용할 수 있습니다.</small></p><input id="revokeCode" type="password" autocomplete="off" placeholder="폐기할 연결코드 dn1.…"><button id="revoke" type="button">이 연결코드 폐기하기</button></section>
 </main><script>
 const form=document.getElementById('connect'),key=document.getElementById('key'),message=document.getElementById('message'),result=document.getElementById('result'),code=document.getElementById('code'),submit=document.getElementById('submit');
 form.addEventListener('submit',async e=>{e.preventDefault();submit.disabled=true;result.hidden=true;code.value='';message.textContent='연결 중…';try{const response=await fetch('/api/agent/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dartApiKey:key.value.trim()}),cache:'no-store'});const data=await response.json();if(!response.ok)throw new Error(data.message||'연결에 실패했습니다.');code.value='연결코드: '+data.sessionToken;result.hidden=false;message.textContent=data.message;key.value='';}catch(e){message.textContent=e.message||'서버 연결을 확인해 주세요.';}finally{submit.disabled=false;}});
+document.getElementById('revoke').addEventListener('click',async()=>{const token=document.getElementById('revokeCode').value.trim().replace(/^연결코드:\\s*/,'');if(!token){message.textContent='폐기할 연결코드를 입력하세요.';return;}const button=document.getElementById('revoke');button.disabled=true;try{const response=await fetch('/api/agent/session/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionToken:token}),cache:'no-store'});const data=await response.json();message.textContent=data.message;if(data.revoked)document.getElementById('revokeCode').value='';}catch{message.textContent='서버 연결을 확인하세요. 폐기가 완료되지 않았습니다.';}finally{button.disabled=false;}});
 document.getElementById('copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(code.value);message.textContent='복사했습니다. 안전하게 보관하고 본인의 GPT 대화창에 붙여 넣으세요.';}catch{code.focus();code.select();message.textContent='연결코드를 선택한 뒤 복사해 주세요.';}});
 </script></body></html>`;
