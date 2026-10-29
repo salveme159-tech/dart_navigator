@@ -5,7 +5,7 @@ import { ENV } from "../_core/env";
 import { extractInitialViewerArgs, parseViewerDeepLinkHtml } from "./viewerLink";
 import { crossValidateMetric, crossValidateMetrics, clearCrossValidationCache, fetchNaverDebtFallback, type MetricCrossValidation } from "./crossValidation";
 import { fetchFnGuideFallback, fetchFnGuideLeaseLiabilities } from "./fnGuideFallback";
-import { parseBorrowingTotalFromDisclosure, parseDepreciationFromDisclosure, parseLeaseLiabilitiesFromDisclosure } from "./disclosureNotes";
+import { parseBorrowingTotalFromDisclosure, parseDepreciationFromDisclosure, parseLeaseLiabilitiesFromDisclosure, parseRevenueFromDisclosure } from "./disclosureNotes";
 import {
   DEFAULT_COMPANY,
   METRIC_LABELS,
@@ -360,7 +360,7 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const groups: Array<{ group: string; aliases: string[]; ids: RegExp[]; lease?: boolean; preferAggregate?: string[]; preferSingle?: string[] }> = [
     { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings/i], preferSingle: ["단기차입금", "단기차입부채"] },
     { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
-    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채"] },
+    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
     { group: "사채", aliases: ["사채", "회사채", "비유동사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^ifrs-full_BondsIssued$|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i], preferSingle: ["사채", "회사채"] },
     { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
     { group: "비유동리스부채", aliases: ["비유동리스부채", "장기리스부채", "비유동리스부채합계"], ids: [/NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent/i], lease: true, preferSingle: ["비유동리스부채", "장기리스부채"] },
@@ -395,7 +395,13 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
     if (spec.preferAggregate?.length) {
       for (const alias of spec.preferAggregate) {
         const found = candidates.filter((item) => item.account === alias || item.account.startsWith(alias)).sort((a, b) => a.accountLength - b.accountLength)[0];
-        if (found) return [found];
+        if (found) {
+          // A loan's current portion does not include separately disclosed convertible bonds.
+          if (spec.group === "유동성장기부채" && !/사채/.test(found.account)) {
+            return [found, ...candidates.filter(item => item.row !== found.row && /사채/.test(item.account))];
+          }
+          return [found];
+        }
       }
     }
     // 이름이 같은 계정코드 변형이 여러 개 있으면 하나만 고르되, 상이한 세부 계정은 함께 합산합니다.
@@ -455,8 +461,10 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
     if ((!/차입|사채|대출금/.test(name) && !/Borrowings|Bonds|Debenture|LoansAndBorrowings/i.test(row.account_id ?? "")) || /할인발행|발행비|상환할증|총차입금|차입금총계|차입금합계|차입금및사채|차입금및회사채|차입금과사채/.test(name)) return false;
     return !coreItems.some(item => item.row === row) && !selectedCore.some(({spec}) => candidatesFor(spec).some(item => item.row === row));
   });
-  const unresolvedFinancialLiability = bsRows.some(row => /기타.*금융부채|기타.*차입|금융부채합계/.test(normalize(row.account_nm)) && !coreItems.some(item => item.row === row));
-  const reportedScopeComplete = fullBalanceSheet && coreFound > 0 && !unmatchedBorrowing && !unresolvedFinancialLiability;
+  // Other financial liabilities include trade payables/derivatives and must not
+  // invalidate the separately disclosed loan/bond accounts or be added wholesale.
+  // Leases are independently verified in the body or the same report's notes.
+  const reportedScopeComplete = fullBalanceSheet && coreFound > 0 && !unmatchedBorrowing;
   // '차입금및사채'처럼 차입금과 사채를 한 줄로 묶어 공시하는 계정(구성 계정이 따로 없을 때만 합계로 사용).
   const combinedRow = bsRows.find((row) => /^(?:차입금및사채|차입금및회사채|차입금과사채|차입금및사채합계)$/.test(normalize(row.account_nm)) && (() => { const v = amountOf(row); return v !== null && Number.isFinite(v); })()) ?? null;
   return {
@@ -556,6 +564,19 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
 }
 
 type PickedMetric = { partialValue?: number; missingComponents?: string[]; value: number; unit: string; lines: string[]; formula: string | null; disclaimer: string | null; sourceHeading: string };
+
+function revenueFromOperatingCosts(rows:Row[],period:Period):PickedMetric|null {
+  for (const section of ["CIS","IS"]) {
+    const group=rows.filter(row=>row.sj_div===section);
+    const profit=findRowLike(group,[section],metricConfig.operatingProfit.names,period);
+    const expense=group.find(row => (/^(?:영업비용|영업비용합계|총영업비용)$/.test(normalizeAccountName(row.account_nm)) || /^ifrs-full_OperatingExpenses$/i.test(row.account_id??"")) && periodAmount(row,period)!==null);
+    if (!profit || !expense || !sameAccountScope(profit,expense)) continue;
+    const p=periodAmount(profit,period),e=periodAmount(expense,period);
+    if (p===null || e===null || e<0 || p+e<0) continue;
+    return {value:p+e,unit:"억원",formula:"영업수익(매출액) = 동일 손익계산서의 영업이익 + 영업비용",lines:[`영업이익 ${won(p)}`,`공시 영업비용 합계 ${won(e)}`,`영업수익 ${won(p+e)}`],disclaimer:null,sourceHeading:"손익계산서 > 영업수익(영업이익 + 영업비용)"};
+  }
+  return null;
+}
 
 export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric): PickedMetric | null {
   if (metric === "payables") return pickDirectAccount(rows, period, "매입채무");
@@ -795,13 +816,13 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
   }
 
   const directLabels:Partial<Record<FinancialMetric,string>>={revenue:"매출액",operatingProfit:"영업이익",netIncome:"순이익",operatingCashFlow:"영업현금흐름",investmentCashFlow:"투자활동현금흐름",financingCashFlow:"재무활동현금흐름"};
-  if(directLabels[metric])return pickDirectAccount(rows,period,directLabels[metric]!);
+  if(directLabels[metric])return pickDirectAccount(rows,period,directLabels[metric]!) ?? (metric==="revenue" ? revenueFromOperatingCosts(rows,period) : null);
   const config = metricConfig[metric];
   const row = metric === "revenue"
-    ? findRevenueRow(rows, config.sj)
+    ? findRevenueRow(rows, config.sj, period)
     : metric === "netIncome"
       ? (findRowLike(rows, ["CIS", "IS"], ["반기순손익", "분기순손익", "당기순이익", "당기순이익(손실)", "연결당기순이익"]) ?? findRowLike(rows, config.sj, config.names))
-      : findRowLike(rows, config.sj, config.names);
+      : findRowLike(rows, config.sj, config.names, period);
   const isFlowStatement = config.sj.some((statement) => ["IS", "CIS", "CF"].includes(statement));
   const value = row ? periodAmount(row, period) : null;
   if (!row || value === null) return null;
@@ -1153,6 +1174,21 @@ async function pickMetricWithOriginalFallback(args: {
   let picked = pickMetric(rows, period, metric);
   let url: string | null = null;
   const rceptNo = rows.find((row) => row.rcept_no)?.rcept_no ?? "";
+
+  if (metric === "revenue" && (!picked || !Number.isFinite(picked.value)) && /^\d{14}$/.test(rceptNo)) {
+    const entries=await disclosureEntries(rceptNo,requestKey).catch(()=>[]);
+    const revenue=parseRevenueFromDisclosure(entries,period,basis);
+    if (revenue) picked={value:revenue.value,unit:"억원",formula:null,lines:[`DART 원문 계정: ${revenue.label}`,`공시 파일: ${revenue.sourceFile}`,`동일 보고기간 영업수익 ${won(revenue.value)}`],disclaimer:null,sourceHeading:`DART 원문 손익계산서 > ${revenue.label}`};
+  }
+
+  if ((metric === "operatingMargin" || metric === "netMargin") && (!picked || !Number.isFinite(picked.value)) && !pickDirectAccount(rows,period,"매출액")) {
+    const revenue=await pickMetricWithOriginalFallback({...args,metric:"revenue"});
+    const profit=pickMetric(rows,period,metric==="operatingMargin"?"operatingProfit":"netIncome");
+    if (revenue.picked && Number.isFinite(revenue.picked.value) && revenue.picked.value!==0 && profit && Number.isFinite(profit.value)) {
+      const name=metric==="operatingMargin"?"영업이익":"순이익";
+      picked={value:profit.value/revenue.picked.value*100,unit:"%",formula:`${name}률 = ${name} ÷ 영업수익(매출액) × 100`,lines:[...profit.lines,...revenue.picked.lines],disclaimer:null,sourceHeading:"같은 공시 손익계산서 > 이익·영업수익"};
+    }
+  }
 
   if (metric === "borrowings" || metric === "borrowingsRatio") {
     const corrected = await withDartLeaseFallback({ corp, rows, period, basis, metric, picked, rceptNo, requestKey });
@@ -1581,10 +1617,10 @@ export async function snapshotDart(companyName: string, force = false, requestKe
   }
   // DART 본문에 리스부채가 없으면 실제 접수번호의 원문 주석에서 먼저 금액을 찾고, 네이버 금융을 그다음 보조 경로로 사용합니다.
   let leaseFallbackUrl: string | null = null;
-  for (const metric of ["borrowings", "borrowingsRatio"] as const) {
+  for (const metric of ["revenue", "operatingMargin", "netMargin", "borrowings", "borrowingsRatio"] as const) {
     const existing = metrics[metric];
     const corrected = await pickMetricWithOriginalFallback({corp, rows, period, basis:fs, metric, requestKey});
-    if (corrected.url) leaseFallbackUrl = corrected.url;
+    if ((metric === "borrowings" || metric === "borrowingsRatio") && corrected.url) leaseFallbackUrl = corrected.url;
     if (corrected.picked && Number.isFinite(corrected.picked.value)) {
       metrics[metric] = { ...(existing ?? { value: null, unit: corrected.picked.unit, formula: corrected.picked.formula, citation: citation(periodLabel(period), corrected.picked.sourceHeading, rcept), available: false }), value: corrected.picked.value, unit: corrected.picked.unit, formula: corrected.picked.formula, lines: corrected.picked.lines, disclaimer: corrected.picked.disclaimer, citation: pickedCitation(period,corrected.picked,rows,corrected.url), available: true };
     } else if (existing && corrected.picked?.disclaimer) {

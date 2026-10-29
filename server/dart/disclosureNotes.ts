@@ -93,6 +93,14 @@ function isCurrentHeader(value: string, period: Period): boolean {
   return /당분기말|당분기|당기말|당기|분기말/.test(compact) && !/반기/.test(compact);
 }
 
+// DART XBRL notes often put "당반기말 (단위: 천원)" above a two-column
+// table whose only numeric header is "공시금액". The period belongs to the
+// table, rather than the header cell; never carry a prior-period heading over.
+function tablePeriodContext(before: string): string {
+  const markers = [...textOf(before).matchAll(/(?:당|전)(?:반기|분기|기)(?:말)?|20\d{2}[.\-/년]\s*\d{1,2}(?:[.\-/월]\s*\d{1,2})?/g)];
+  return markers.at(-1)?.[0] ?? "";
+}
+
 /** Restrict note tables to the requested basis before reading any numeric column. */
 export function disclosureEntriesForBasis(entries: HtmlEntry[], basis?:"CFS"|"OFS"): HtmlEntry[] {
   if(!basis)return entries;
@@ -139,6 +147,7 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
       const width = Math.max(...rows.map((row) => row.length));
       const headers = Array.from({ length: width }, (_, column) => rows.slice(0, Math.min(8, rows.length)).map((row) => row[column] ?? "").join(" "));
       const targetColumns = headers.map((header, index) => ({ header, index })).filter(({ header, index }) => index > 0 && isCurrentHeader(header, period));
+      if (!targetColumns.length && width === 2 && isCurrentHeader(tablePeriodContext(before),period)) targetColumns.push({header:tablePeriodContext(before),index:1});
       if (!targetColumns.length) continue;
       const currentValues: number[] = [];
       const noncurrentValues: number[] = [];
@@ -160,7 +169,8 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
         const namesLease = /리스부채|리스료부채|leaseLiabilities/i.test(rowLabel);
         const currentRow = /유동.*리스|리스.*유동|^(?:유동|유동성)$/i.test(rowLabel) || (namesLease && /유동/.test(rowLabel) && !/비유동/.test(rowLabel));
         const noncurrentRow = /비유동.*리스|리스.*비유동|장기리스부채|^(?:비유동|비유동성)$/i.test(rowLabel);
-        const totalRow = namesLease && !currentRow && !noncurrentRow && /합계|총계|장부금액|기말금액|리스부채$|리스부채합계/.test(rowLabel);
+        const totalRow = namesLease && !currentRow && !noncurrentRow && !/기초|추가|상환|감소|이자|변동|증가/.test(rowLabel) && /합계|총계|장부금액|기말금액|리스부채$|리스부채합계/.test(rowLabel);
+        if (!currentRow && !noncurrentRow && !totalRow) continue;
         // 행 자체가 '리스부채'이고 열 제목에 유동/비유동이 있는 구조를 지원합니다.
         for (const { header, index } of targetColumns) {
           const cell = cells[index] ?? "";
@@ -169,7 +179,7 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
           const headerCompact = normalize(header);
           if (noncurrentRow || (/비유동/.test(headerCompact) && !/유동성/.test(headerCompact))) noncurrentValues.push(value);
           else if (currentRow || /(?:^|[^비])유동/.test(headerCompact)) currentValues.push(value);
-          else if (totalRow || (namesLease && !/유동|비유동/.test(headerCompact))) totalValues.push(value);
+          else if (totalRow) totalValues.push(value);
         }
       }
       const unique = (items: number[]) => [...new Set(items.map((value) => Number(value.toFixed(6))))];
@@ -238,6 +248,28 @@ export function parseBorrowingTotalFromDisclosure(entries: HtmlEntry[], period: 
   }
   if (new Set(candidates.map(item => `${item.value.toFixed(6)}:${item.includesLease}`)).size !== 1) return null;
   return candidates[0] ?? null;
+}
+
+/** Gross operating revenue printed in the selected financial statement, never net interest income. */
+export function parseRevenueFromDisclosure(entries: HtmlEntry[], period: Period, basis:"CFS"|"OFS") {
+  const found:Array<{value:number;sourceFile:string;label:string}>=[];
+  for (const entry of disclosureEntriesForBasis(entries,basis)) for (const match of entry.text.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)) {
+    const before=entry.text.slice(Math.max(0,(match.index??0)-700),match.index);
+    const unit=[...`${before} ${match[0]}`.matchAll(/단위\s*[:：]?\s*(천원|백만원|억원|원)(?![가-힣])/gi)].at(-1)?.[1];
+    if (!unit) continue;
+    const rows=expandTableRows(match[0]),width=Math.max(0,...rows.map(row=>row.length));
+    const headers=Array.from({length:width},(_,col)=>rows.slice(0,4).map(row=>row[col]??"").join(" "));
+    let scored=headers.map((header,index)=>({index,score:index?depreciationPeriodScore(header,period):0})).filter(item=>item.score>0);
+    if (!scored.length && width===2 && isCurrentHeader(tablePeriodContext(before),period) && !/3개월/.test(textOf(before.slice(-150)))) scored=[{index:1,score:100}];
+    const best=Math.max(0,...scored.map(item=>item.score));
+    for (const cells of rows) {
+      const label=normalize(cells[0]??"");
+      if (!/^(?:매출액|수익매출액|매출액영업수익|영업수익매출액|영업수익|총영업수익|영업수익합계|매출수익)$/.test(label)) continue;
+      const values=scored.filter(item=>item.score===best).flatMap(({index})=>{const value=parseAmount(cells[index]??"",unit);return value!==null?[value]:[];});
+      if (new Set(values).size===1) found.push({value:values[0],sourceFile:entry.name,label:textOf(cells[0])});
+    }
+  }
+  return new Set(found.map(item=>item.value.toFixed(6))).size===1?found[0]:null;
 }
 
 
