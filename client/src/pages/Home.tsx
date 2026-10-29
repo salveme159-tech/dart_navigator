@@ -72,7 +72,6 @@ type LiveCompareRow = {
 type ComparePeriodChoice = "latest" | "q1" | "half" | "q3" | "annual";
 
 export const SERVER_METRIC_BY_UI_LABEL: Record<string, string> = {
-  ...COMPARISON_METRIC_BY_LABEL,
   "매출액": "revenue", "영업이익": "operatingProfit", "순이익": "netIncome",
   "영업이익률": "operatingMargin", "순이익률": "netMargin",
   "영업현금흐름": "operatingCashFlow", "투자현금흐름": "investmentCashFlow", "투자활동현금흐름": "investmentCashFlow",
@@ -82,6 +81,9 @@ export const SERVER_METRIC_BY_UI_LABEL: Record<string, string> = {
   "유동비율": "currentRatio", "이자보상배율": "interestCoverage", "ROE": "roe", "ROA": "roa",
   "EPS": "eps", "EBITDA": "ebitda", "PER": "per", "PBR": "pbr",
 };
+
+// Raw-account comparison routes are not snapshot serverMetrics keys.
+export const COMPARISON_METRIC_BY_UI_LABEL: Record<string, string> = {...SERVER_METRIC_BY_UI_LABEL, ...COMPARISON_METRIC_BY_LABEL};
 
 function companySearchControl(props: {
   expanded: boolean;
@@ -449,7 +451,7 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [apiKey, isApiGateOpen]);
 
-  // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·공시 알람·공시 리스트
+  // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·공시 알림 및 최신 현황
   const [activeTab, setActiveTab] = useState<
     "DASHBOARD" | "ASK" | "COMPARE" | "ONE_PAGER" | "ALERTS"
   >("DASHBOARD");
@@ -921,7 +923,7 @@ export default function Home() {
     const request=startComparisonLoad({
       tasks,concurrency:4,timeoutMs:45_000,
       load:async(task,signal):Promise<LiveCompareRow>=>{
-        const metric=SERVER_METRIC_BY_UI_LABEL[task.metricId];
+        const metric=COMPARISON_METRIC_BY_UI_LABEL[task.metricId];
         if(!metric)throw new Error("이 지표의 실시간 비교 엔드포인트 매핑이 없습니다.");
         const input=encodeURIComponent(JSON.stringify({json:{companies:[task.company],metric,basis:selectedBasis,...choice,includeValidation:false}}));
         const response=await fetch(apiUrl(`/api/trpc/dart.compare?input=${input}`),{
@@ -1318,7 +1320,7 @@ export default function Home() {
               요약 보고서
             </button>
 
-            <button onClick={() => setActiveTab("ALERTS")} className={`relative w-full flex items-center gap-2 px-2.5 py-3 rounded-xl text-sm font-bold ${activeTab === "ALERTS" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}><BookOpen className="w-4 h-4 shrink-0" /><span className="whitespace-nowrap text-[13px]">공시 알람·공시 리스트</span>{unreadFilingAlertCount > 0 && <span className="absolute right-1 top-0.5 rounded-full bg-emerald-600 px-1.5 text-[9px] leading-4">{unreadFilingAlertCount > 99 ? "99+" : unreadFilingAlertCount}</span>}</button>
+            <button onClick={() => setActiveTab("ALERTS")} className={`relative w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-bold transition ${activeTab === "ALERTS" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}><BookOpen className="w-4 h-4 shrink-0" /><span className="whitespace-nowrap">공시 알림 및 최신 현황</span>{unreadFilingAlertCount > 0 && <span className="absolute right-1 top-0.5 rounded-full bg-emerald-600 px-1.5 text-[9px] leading-4">{unreadFilingAlertCount > 99 ? "99+" : unreadFilingAlertCount}</span>}</button>
 
           </nav>
         </div>
@@ -1985,7 +1987,7 @@ export default function Home() {
 
 
         {activeTab === "ALERTS" && <section className="space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="whitespace-nowrap text-2xl font-extrabold">공시 알람·공시 리스트</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.</p></div><div className="ml-auto flex shrink-0 gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="whitespace-nowrap text-2xl font-extrabold">공시 알림 및 최신 현황</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.</p></div><div className="ml-auto flex shrink-0 gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div></div>
           <div className="rounded-2xl border bg-white p-4 space-y-3"><div className="text-sm font-extrabold">관심기업 추가·삭제 (최대 20개)</div><div className="relative flex flex-wrap gap-2"><input value={alertCompanySearch} onChange={(e) => setAlertCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && alertCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); } }} placeholder="기업명 검색" className="min-w-[220px] flex-1 rounded-lg border px-3 py-2 text-sm"/><button type="button" disabled={!alertCompanySearch.trim() || isRefreshingApi} onClick={async () => { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">기업 등록하기</button>{alertCompanySuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-60 w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{alertCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}</div><div className="flex flex-wrap gap-2">{alertCompanyNames.map((name) => <span key={name} className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{name}<button type="button" title={`${name} 관심기업에서 삭제`} onClick={() => setAlertCompanyNames((prev) => prev.filter((item) => item !== name))} className="text-slate-500 hover:text-rose-600"><X className="h-3.5 w-3.5" /></button></span>)}{!alertCompanyNames.length && <span className="text-xs text-slate-500">관심기업이 없습니다. 위에서 기업을 검색하거나 선택하세요.</span>}</div><div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600"><div>상태: {alertStatus}</div><div className="mt-1">마지막 성공 조회: {lastAlertCheck || "아직 없음"}</div></div></div>
           <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-extrabold text-slate-900">{alertDisplayCompany.corpName} 공시 현황</h2><p className="mt-1 text-xs text-slate-500">최근 6개월 접수 공시 · 최신순</p></div><div className="flex flex-wrap items-center gap-2"><label htmlFor="alert-view-company" className="text-xs font-semibold text-slate-600">기업 선택</label><select id="alert-view-company" aria-label="공시 현황 기업 선택" value={alertDisplayCompany.corpName} onChange={(e) => setAlertViewCompanyName(e.target.value)} className="max-w-[220px] rounded-lg border px-3 py-2 text-xs font-semibold">{companies.map((item) => <option key={item.corpName} value={item.corpName}>{item.corpName}</option>)}</select><button type="button" onClick={() => setCompanyFilingsRefreshNonce((n) => n + 1)} disabled={isLoadingCurrentFilings} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">{isLoadingCurrentFilings ? "조회 중…" : "새로고침"}</button></div></div>{displayedCompanyFilings.length ? <div className="divide-y divide-slate-100">{displayedCompanyFilings.slice(0, 20).map((filing) => <a key={filing.rceptNo} href={filing.url} target="_blank" rel="noreferrer" className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-emerald-50/50"><span className="w-[82px] text-xs tabular-nums text-slate-500">{filing.receiptDate.slice(0,4)}.{filing.receiptDate.slice(4,6)}.{filing.receiptDate.slice(6,8)}</span><span className="min-w-0 flex-1 text-sm font-semibold text-slate-800">{filing.reportName}</span><ExternalLink className="h-3.5 w-3.5 text-emerald-700" /></a>)}</div> : <div className="p-5 text-sm text-slate-500">{isLoadingCurrentFilings ? "DART 공시목록을 조회하고 있습니다…" : currentFilingsMessage}</div>}<p className="border-t border-slate-100 p-3 text-[11px] text-slate-500">{currentFilingsMessage} · 화면 활성 시 15초 간격 자동 확인</p></section>
         </section>}
