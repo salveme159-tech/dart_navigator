@@ -350,7 +350,7 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const excluded = /사채할인발행차금|차입금할인발행차금|미상각할인차금|할인발행차금|상환할증금|사채발행비|총차입금|차입금총계|차입금합계|총차입부채|차입금및사채|차입금및회사채|차입금과사채/;
   const groups: Array<{ group: string; aliases: string[]; ids: RegExp[]; lease?: boolean; preferAggregate?: string[]; preferSingle?: string[] }> = [
     { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings/i], preferSingle: ["단기차입금", "단기차입부채"] },
-    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongTermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
+    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
     { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채"] },
     { group: "사채", aliases: ["사채", "회사채", "비유동사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^ifrs-full_BondsIssued$|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i], preferSingle: ["사채", "회사채"] },
     { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
@@ -477,13 +477,18 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
       lines.push(`DART 원문 구성 리스부채 추가: ${won(leaseTotal)}`, `리스 포함 총차입금: ${won(totalBorrowings)}`);
       sourceHeading = `재무상태표 > ${aggregateRow.account_nm} + 리스부채 구성 계정`;
     } else if (matchesCoreOnly && leaseTotal > 0) {
+      lines.push(...coreItems.map((item) => `구성 · ${item.account}: ${won(item.value)}`));
       lines.push(`DART 구성 계정에서 확인한 유동·비유동 리스부채 추가: ${won(leaseTotal)}`, `리스 포함 총차입금: ${won(totalBorrowings)}`);
       sourceHeading = `재무상태표 > ${aggregateRow.account_nm} + 리스부채 구성 계정`;
     } else if (matchesLeaseIncluded) {
       lines.push(`구성 계정 합계(리스부채 포함): ${won(components.total)}`, `차이: ${won(Math.abs(components.total - aggregateValue))}`);
     } else if (components.coreFound > 0) {
+      lines.push(...components.items.map((item) => `구성 · ${item.account}: ${won(item.value)}`));
+      if (combinedBorrowingAndBonds) lines.push(`참고 · '${aggregateRow.account_nm}' 행은 구성 계정과의 중복 합산을 방지하기 위해 별도로 더하지 않았습니다.`);
       lines.push(`구성 계정 합계(현재 확인 범위): ${won(components.total)}`, `차이: ${won(Math.abs(components.total - aggregateValue))}`);
-      if (Math.abs(components.total - aggregateValue) > tolerance) disclaimer = "공시 합계와 구성 계정 범위가 일치하지 않습니다. 주석에서 리스부채 포함 여부를 확인해야 합니다.";
+      if (Math.abs(components.total - aggregateValue) > tolerance) disclaimer = "공시 합계와 구성 계정의 금액이 불일치합니다. 주석에서 리스부채 포함 여부를 확인해야 합니다.";
+    } else if (combinedBorrowingAndBonds) {
+      disclaimer = `구성 계정이 없어 '${aggregateRow.account_nm}' 합계 행을 사용했습니다. 리스부채는 별도 확인이 필요합니다.`;
     }
   } else if (components.coreFound > 0) {
     // 확인된 차입금 계정들을 그대로 합산합니다. 확인되지 않은 계정은 0으로 넣지 않고 합계에서 제외하며 안내만 남깁니다.
@@ -516,7 +521,7 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
   if (metric === "borrowings") return { value: totalBorrowings, unit: "억원", lines, formula, disclaimer, sourceHeading };
   const resolvedAssets = resolveBalanceTotal(rows, period, "자산총계");
   const assets = resolvedAssets?.value ?? null;
-  if (assets === null || !Number.isFinite(assets) || assets <= 0 || !Number.isFinite(totalBorrowings)) {
+  if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0 || !Number.isFinite(totalBorrowings)) {
     return { value: Number.NaN, unit: "%", lines: [...lines, "분모 · 자산총계 확인 실패"], formula: "차입금의존도 = 총차입성 부채(리스 포함) ÷ 자산총계 × 100", disclaimer: "자산총계 행과 부채총계+자본총계 대체 산식을 모두 확인하지 못해 차입금 의존도를 계산하지 않았습니다.", sourceHeading };
   }
   const ratio = totalBorrowings / assets * 100;
@@ -876,7 +881,7 @@ async function withDartLeaseFallback(args: {
     };
     const resolvedAssets = resolveBalanceTotal(rows, period, "자산총계");
     const assets = resolvedAssets?.value ?? null;
-    if (assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: `${sourceLabel} 총차입금은 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다.` } : null, url: externalTotal.url };
+    if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: `${sourceLabel} 총차입금은 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다.` } : null, url: externalTotal.url };
     const ratio = externalTotal.value / assets * 100;
     return { picked: { value: ratio, unit: "%", lines: [...externalLines, ...resolvedAssets.lines, `DART 자산총계${resolvedAssets.derived ? "(부채총계 + 자본총계로 계산)" : ""}: ${won(assets)}`, `차입금 의존도: ${won(externalTotal.value)} ÷ ${won(assets)} × 100 = ${ratio.toFixed(2)}%`], formula: `차입금 의존도 = ${sourceLabel} 총차입금 ÷ DART 자산총계 × 100`, disclaimer: `분자는 ${sourceLabel} 수치, 분모는 DART 자산총계입니다. 외부 자료의 차입금 포함 범위는 원문 주석과 함께 확인해야 합니다.`, sourceHeading: `${sourceLabel} 총차입금 + DART 자산총계` }, url: externalTotal.url };
   };
@@ -1014,7 +1019,7 @@ async function withDartLeaseFallback(args: {
   };
   const resolvedAssets = resolveBalanceTotal(rows, period, "자산총계");
   const assets = resolvedAssets?.value ?? null;
-  if (assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: "리스부채는 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다." } : null, url: leaseUrl };
+  if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0) return { picked: picked ? { ...picked, disclaimer: "리스부채는 확인했지만 DART 자산총계와 부채총계+자본총계 대체 산식을 확인하지 못해 차입금 의존도를 계산하지 않았습니다." } : null, url: leaseUrl };
   const ratio = ratioDebt / assets * 100;
   const leaseInclusionNote = `리스부채 ${won(leaseTotal)}은 총차입성 부채 분자에 포함했습니다.`;
   return {
@@ -2372,5 +2377,3 @@ function formatMetricValue(value: number, unit: string) {
   // 억원 값은 소수점 첫째 자리까지 보존합니다. 정확한 원 단위 금액은 DART 원문 표에 별도로 남습니다.
   return `${value.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}${unit}`;
 }
-
-
