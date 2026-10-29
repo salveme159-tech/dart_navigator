@@ -7,8 +7,6 @@ export interface ExportTableRow {
   formulaOrAccount: string;
   sourceReport: string;
   rceptNo: string;
-  basis?: string;
-  sourceUrls?: string;
 }
 
 export function exportRowsToCsvExcel(filename: string, rows: ExportTableRow[]) {
@@ -16,15 +14,13 @@ export function exportRowsToCsvExcel(filename: string, rows: ExportTableRow[]) {
     "기업명",
     "지표/계정명",
     "기준기간",
-    "산출값(단위 포함)",
-    "수치(표시 단위 포함)",
+    "산출값(표시)",
+    "원문금액(원/%) ",
     "계산식/원문계정",
     "공시출처",
     "DART접수번호",
-    "연결/별도 기준",
-    "출처 URL",
   ];
-  const escapeCsv = (val: string) => `"${String(val ?? "").replace(/^[=+@]/, "'$&").replace(/"/g, '""')}"`;
+  const escapeCsv = (val: string) => `"${String(val ?? "").replace(/"/g, '""')}"`;
   const csvLines = [
     headers.map(escapeCsv).join(","),
     ...rows.map((r) =>
@@ -37,8 +33,6 @@ export function exportRowsToCsvExcel(filename: string, rows: ExportTableRow[]) {
         r.formulaOrAccount,
         r.sourceReport,
         r.rceptNo,
-        r.basis ?? "미확인",
-        r.sourceUrls ?? "",
       ]
         .map(escapeCsv)
         .join(",")
@@ -60,8 +54,6 @@ export function exportRowsToCsvExcel(filename: string, rows: ExportTableRow[]) {
   URL.revokeObjectURL(url);
 }
 
-export const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
-
 export function exportRowsToPrintablePdf(title: string, rows: ExportTableRow[]) {
   const win = window.open("", "_blank", "width=1024,height=768");
   if (!win) {
@@ -72,12 +64,12 @@ export function exportRowsToPrintablePdf(title: string, rows: ExportTableRow[]) 
     .map(
       (r) => `
       <tr>
-        <td>${escapeHtml(r.corpName)}</td>
-        <td><strong>${escapeHtml(r.metricName)}</strong></td>
-        <td style="text-align:center;">${escapeHtml(r.period)}</td>
-        <td style="text-align:right; font-weight:700; color:#0f5132;">${escapeHtml(r.valueFormatted)}</td>
-        <td>${escapeHtml(r.formulaOrAccount)}</td>
-        <td>${escapeHtml(r.sourceReport)} (${escapeHtml(r.rceptNo)})<br>${escapeHtml(r.basis)}<br>${escapeHtml(r.sourceUrls)}</td>
+        <td>${r.corpName}</td>
+        <td><strong>${r.metricName}</strong></td>
+        <td style="text-align:center;">${r.period}</td>
+        <td style="text-align:right; font-weight:700; color:#0f5132;">${r.valueFormatted}</td>
+        <td>${r.formulaOrAccount}</td>
+        <td>${r.sourceReport} (${r.rceptNo})</td>
       </tr>`
     )
     .join("");
@@ -87,7 +79,7 @@ export function exportRowsToPrintablePdf(title: string, rows: ExportTableRow[]) 
     <html lang="ko">
     <head>
       <meta charset="utf-8" />
-      <title>${escapeHtml(title)}</title>
+      <title>${title}</title>
       <style>
         body { font-family: "Pretendard", -apple-system, BlinkMacSystemFont, sans-serif; padding: 32px; color: #1e293b; }
         h1 { font-size: 20px; margin-bottom: 6px; color: #0f172a; }
@@ -102,8 +94,8 @@ export function exportRowsToPrintablePdf(title: string, rows: ExportTableRow[]) 
       </style>
     </head>
     <body>
-      <h1>${escapeHtml(title)}</h1>
-      <p class="sub">출력일시: ${new Date().toLocaleString("ko-KR")} | 지표별 표시 출처 기준</p>
+      <h1>${title}</h1>
+      <p class="sub">출력일시: ${new Date().toLocaleString("ko-KR")} | OpenDART 전자공시 기준</p>
       <table>
         <thead>
           <tr>
