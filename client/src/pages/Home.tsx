@@ -1,4 +1,5 @@
 import { metricSourceLinks } from "@/lib/metricSources";
+import { COMPARISON_METRIC_BY_LABEL } from "@shared/comparisonMetrics";
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { apiBaseUrl, apiUrl } from "@/lib/apiBase";
 import LiveDartPanel from "@/components/LiveDartPanel";
@@ -68,9 +69,10 @@ type LiveCompareRow = {
   message?: string;
 };
 
-type ComparePeriodChoice = "latest" | "q1" | "half" | "q3" | "h2" | "annual";
+type ComparePeriodChoice = "latest" | "q1" | "half" | "q3" | "annual";
 
-const SERVER_METRIC_BY_UI_LABEL: Record<string, string> = {
+export const SERVER_METRIC_BY_UI_LABEL: Record<string, string> = {
+  ...COMPARISON_METRIC_BY_LABEL,
   "매출액": "revenue", "영업이익": "operatingProfit", "순이익": "netIncome",
   "영업이익률": "operatingMargin", "순이익률": "netMargin",
   "영업현금흐름": "operatingCashFlow", "투자현금흐름": "investmentCashFlow", "투자활동현금흐름": "investmentCashFlow",
@@ -80,6 +82,26 @@ const SERVER_METRIC_BY_UI_LABEL: Record<string, string> = {
   "유동비율": "currentRatio", "이자보상배율": "interestCoverage", "ROE": "roe", "ROA": "roa",
   "EPS": "eps", "EBITDA": "ebitda", "PER": "per", "PBR": "pbr",
 };
+
+function companySearchControl(props: {
+  expanded: boolean;
+  query: string;
+  suggestions: Array<{name:string; code:string; stock?:string}>;
+  busy: boolean;
+  onToggle: (expanded:boolean) => void;
+  onQueryChange: (query:string) => void;
+  onPick: (name:string) => Promise<void>;
+}) {
+  return <div className="flex flex-wrap items-center gap-3" data-company-search="true">
+    {!props.expanded ? <button type="button" onClick={() => props.onToggle(true)} aria-expanded={false} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"><Plus className="h-3.5 w-3.5" />기업 검색</button> :
+      <div className="relative flex flex-wrap items-center gap-2">
+        <input type="text" autoFocus value={props.query} onChange={e => props.onQueryChange(e.target.value)} onKeyDown={e => {if (e.key === "Enter" && props.query.trim()) void props.onPick(props.query.trim());}} aria-label="기업명 검색" placeholder="기업명 검색" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs" />
+        <button type="button" disabled={props.busy || !props.query.trim()} onClick={() => void props.onPick(props.query.trim())} className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40">기업 검색</button>
+        <button type="button" aria-label="기업 검색 닫기" onClick={() => props.onToggle(false)} className="p-1 text-slate-400 hover:text-slate-700"><X className="h-4 w-4" /></button>
+        {props.suggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-64 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{props.suggestions.map(item => <button type="button" key={item.code} onClick={() => void props.onPick(item.name)} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}
+      </div>}
+  </div>;
+}
 
 export const METRIC_DEFINITIONS: MetricDefinition[] = [
   {
@@ -177,29 +199,18 @@ export const METRIC_DEFINITIONS: MetricDefinition[] = [
     label: "차입금 의존도",
     category: "운전자본/차입금",
     unit: "%",
-    formulaText: "(차입금 ÷ 자산총계) × 100",
+    formulaText: "(총차입금(리스부채 포함) ÷ 자산총계) × 100",
     aliases: ["차입금의존도", "차입금 의존도"],
-    compute: (c) => {
-      const debt =
-        c.accounts.단기차입금 +
-        c.accounts.유동성장기부채 +
-        c.accounts.사채 +
-        c.accounts.장기차입금;
-      return Number(((debt / c.accounts.자산총계) * 100).toFixed(2));
-    },
+    compute: (c) => c.serverMetrics?.borrowingsRatio?.value ?? Number.NaN,
   },
   {
     id: "차입금",
     label: "차입금",
     category: "운전자본/차입금",
     unit: "억원",
-    formulaText: "단기차입금 + 유동성장기부채 + 사채 + 장기차입금",
+    formulaText: "단기차입금 + 유동성장기부채 + 사채 + 장기차입금 + 리스부채",
     aliases: ["차입금", "총차입금"],
-    compute: (c) =>
-      c.accounts.단기차입금 +
-      c.accounts.유동성장기부채 +
-      c.accounts.사채 +
-      c.accounts.장기차입금,
+    compute: (c) => c.serverMetrics?.borrowings?.value ?? Number.NaN,
   },
   {
     id: "운전자본",
@@ -438,7 +449,7 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [apiKey, isApiGateOpen]);
 
-  // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·공시 알람 및 최근 공시 현황
+  // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·공시 알람·공시 리스트
   const [activeTab, setActiveTab] = useState<
     "DASHBOARD" | "ASK" | "COMPARE" | "ONE_PAGER" | "ALERTS"
   >("DASHBOARD");
@@ -516,6 +527,8 @@ export default function Home() {
   const [expandedCalculationMetric, setExpandedCalculationMetric] = useState<string | null>(null);
   const [showAddCorpInput, setShowAddCorpInput] = useState<boolean>(false);
   const [newCorpQuery, setNewCorpQuery] = useState<string>("");
+
+  const [showAskCompanyInput, setShowAskCompanyInput] = useState(false);
 
   // 질문하기 탭 상태
   const [askCorpName, setAskCorpName] = useState<string>("대한전선");
@@ -1305,7 +1318,7 @@ export default function Home() {
               요약 보고서
             </button>
 
-            <button onClick={() => setActiveTab("ALERTS")} className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-bold ${activeTab === "ALERTS" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}><BookOpen className="w-4 h-4 shrink-0" /><span>공시 알람 및 최근 공시 현황 {unreadFilingAlertCount > 0 ? `(${unreadFilingAlertCount})` : ""}</span></button>
+            <button onClick={() => setActiveTab("ALERTS")} className={`relative w-full flex items-center gap-2 px-2.5 py-3 rounded-xl text-sm font-bold ${activeTab === "ALERTS" ? "bg-emerald-600 text-white" : "text-emerald-100/80 hover:bg-emerald-900/50"}`}><BookOpen className="w-4 h-4 shrink-0" /><span className="whitespace-nowrap text-[13px]">공시 알람·공시 리스트</span>{unreadFilingAlertCount > 0 && <span className="absolute right-1 top-0.5 rounded-full bg-emerald-600 px-1.5 text-[9px] leading-4">{unreadFilingAlertCount > 99 ? "99+" : unreadFilingAlertCount}</span>}</button>
 
           </nav>
         </div>
@@ -1341,47 +1354,12 @@ export default function Home() {
 
 
 
-            <div className="flex flex-wrap items-center gap-3">
-              {!showAddCorpInput ? (
-                <button
-                  onClick={() => setShowAddCorpInput(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50"
-                >
-                  <Plus className="w-3.5 h-3.5" /> 기업 검색
-                </button>
-              ) : (
-                <div className="relative flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={newCorpQuery}
-                    onChange={(e) => setNewCorpQuery(e.target.value)}
-                    placeholder="기업명 검색"
-                    className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs"
-                  />
-                  {companySearchSuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-64 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{companySearchSuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) setSelectedCorpName(name); setNewCorpQuery(""); setCompanySearchSuggestions([]); setShowAddCorpInput(false); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}
-                  <button
-                    onClick={async () => {
-                      const target = newCorpQuery.trim();
-                      if (target) {
-                        const registeredName = await handleFetchOrRegisterCompany(target);
-                        if (registeredName) setSelectedCorpName(registeredName);
-                        setNewCorpQuery("");
-                        setShowAddCorpInput(false);
-                      }
-                    }}
-                    className="px-3 py-1.5 bg-emerald-700 text-white rounded-lg text-xs font-bold"
-                  >
-                    조회·등록
-                  </button>
-                  <button
-                    onClick={() => setShowAddCorpInput(false)}
-                    className="p-1 text-slate-400 hover:text-slate-700"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-            </div>
+            {companySearchControl({
+              expanded:showAddCorpInput, query:newCorpQuery, suggestions:companySearchSuggestions, busy:isRefreshingApi,
+              onToggle:open => {setShowAddCorpInput(open); if (!open) {setNewCorpQuery(""); setCompanySearchSuggestions([]);}},
+              onQueryChange:setNewCorpQuery,
+              onPick:async target => {const name = await handleFetchOrRegisterCompany(target); if (name) setSelectedCorpName(name); setNewCorpQuery(""); setCompanySearchSuggestions([]); setShowAddCorpInput(false);},
+            })}
             {/* 기준 기업 선택 & 기업 검색 */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-3">
               <span className="text-xs font-bold text-slate-500">기준 기업</span>
@@ -1405,7 +1383,7 @@ export default function Home() {
               <button
                 onClick={() => handleFetchOrRegisterCompany(currentCompany.corpName, false, true)}
                 disabled={isRefreshingApi}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-2xs"
+                className="ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-2xs"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingApi ? "animate-spin" : ""}`} />
                 {isRefreshingApi ? "DART 조회 중..." : "최신 데이터 갱신"}
@@ -1442,7 +1420,7 @@ export default function Home() {
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => setActiveTab("ONE_PAGER")}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition"
+                  className="px-4 py-2.5 rounded-xl border border-white bg-white hover:bg-slate-100 text-emerald-950 text-xs font-bold transition"
                 >
                   요약 보고서 보기 ➔
                 </button>
@@ -1453,7 +1431,7 @@ export default function Home() {
                     setAskSelectedMetricId("영업이익률");
                     setActiveTab("ASK");
                   }}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-950/60 hover:bg-emerald-900 text-white text-xs font-bold transition"
+                  className="px-4 py-2.5 rounded-xl border border-white bg-white hover:bg-slate-100 text-emerald-950 text-xs font-bold transition"
                 >
                   질문하기 ➔
                 </button>
@@ -1636,6 +1614,13 @@ export default function Home() {
 
             </div>
 
+            {companySearchControl({
+              expanded:showAskCompanyInput, query:askCompanySearch, suggestions:askCompanySuggestions, busy:isRefreshingApi,
+              onToggle:open => {setShowAskCompanyInput(open); if (!open) {setAskCompanySearch(""); setAskCompanySuggestions([]);}},
+              onQueryChange:setAskCompanySearch,
+              onPick:async target => {const name = await handleFetchOrRegisterCompany(target); if (name) {setAskCorpName(name); setAskQuery(`${name} 영업이익률`); setAskExecutedQuery(""); setLiveAskStatus("idle");} setAskCompanySearch(""); setAskCompanySuggestions([]); setShowAskCompanyInput(false);},
+            })}
+
             <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
               <div className="flex flex-col sm:flex-row gap-2.5">
                 <select
@@ -1674,12 +1659,7 @@ export default function Home() {
                     검색
                   </button>
                 </div>
-              <div className="relative flex flex-wrap items-center gap-2 min-w-0 lg:w-1/2">
-                <span className="text-xs font-bold text-slate-500">기업 검색</span>
-                <input value={askCompanySearch} onChange={(e) => setAskCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && askCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) setAskCorpName(name); setAskCompanySearch(""); setAskCompanySuggestions([]); } }} placeholder="기업명 검색" className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs" />
-                <button type="button" onClick={async () => { const name = await handleFetchOrRegisterCompany(askCompanySearch); if (name) { setAskCorpName(name); setAskQuery(`${name} 영업이익률`); } setAskCompanySearch(""); setAskCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white">기업 검색</button>
-                {askCompanySuggestions.length > 0 && <div className="absolute left-28 top-full z-30 mt-1 max-h-60 w-72 overflow-y-auto rounded-xl border bg-white p-1 shadow-xl">{askCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAskCorpName(name); setAskQuery(`${name} 영업이익률`); } setAskCompanySearch(""); setAskCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><strong>{item.name}</strong><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}
-              </div>
+
               </div>
 
 
@@ -1796,7 +1776,6 @@ export default function Home() {
                   <option value="q1">1분기 (1~3월 누계)</option>
                   <option value="half">상반기 (1~6월 누계)</option>
                   <option value="q3">3분기 (1~9월 누계)</option>
-                  <option value="h2">하반기 (연간 − 상반기)</option>
                   <option value="annual">연간 (사업보고서)</option>
                 </select>
               </div>
@@ -1977,11 +1956,17 @@ export default function Home() {
                             );
                           })}
                           <td className="border border-slate-200 px-2 py-2 text-[10px] whitespace-nowrap min-w-[190px]">
-                            {compareMetricIds.map(metricId=>{
-                              const row=(liveCompareResults[metricId]||[]).find(row=>row.company===comp.corpName);
-                              const links=metricSourceLinks(row?.citation,row?.rceptNo);
-                              return <div key={metricId} className="mb-2 whitespace-normal"><strong>{metricId}</strong><div className="text-slate-500">{row?.basis} · {row?.period}</div>{links.length ? links.map(link=><a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="mr-2 text-emerald-700 underline">{link.label} ↗</a>) : <span className="text-slate-400">출처 미확인</span>}</div>;
-                            })}
+                            {(() => {
+                              const sources = compareMetricIds.flatMap(metricId => {
+                                const row = (liveCompareResults[metricId] || []).find(item => item.company === comp.corpName);
+                                return metricSourceLinks(row?.citation, row?.rceptNo).map(link => ({...link, metricId}));
+                              });
+                              const links = [...new Map(sources.map(link => [link.url, link])).values()];
+                              if (!links.length) return <span className="text-slate-400">출처 미확인</span>;
+                              if (links.length === 1) return <a href={links[0].url} target="_blank" rel="noreferrer" className="text-emerald-700 underline">{links[0].label} ↗</a>;
+                              return <details><summary className="cursor-pointer text-emerald-700 underline">출처 보기</summary><div className="mt-2 space-y-2 whitespace-normal">{links.map(link => <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="block text-emerald-700 underline">{sources.filter(item => item.url === link.url).map(item => item.metricId).join(", ")} · {link.label} ↗</a>)}</div></details>;
+                            })()}
+
                           </td>
                         </tr>
                       );
@@ -2000,7 +1985,7 @@ export default function Home() {
 
 
         {activeTab === "ALERTS" && <section className="space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-extrabold">공시 알람 및 최근 공시 현황</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.</p></div><div className="ml-auto flex shrink-0 gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="whitespace-nowrap text-2xl font-extrabold">공시 알람·공시 리스트</h1><p className="mt-1 text-sm text-slate-500">관심기업의 신규 공시를 15초 간격으로 확인하며, 브라우저가 열려 있는 동안 동작합니다.</p></div><div className="ml-auto flex shrink-0 gap-2"><button type="button" onClick={() => { if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission(); setAlertStatus("브라우저 알림 권한 요청을 보냈습니다. 브라우저에서 허용해 주세요."); }} className="rounded-lg border bg-white px-3 py-2 text-xs font-bold">브라우저 알림 켜기</button></div></div>
           <div className="rounded-2xl border bg-white p-4 space-y-3"><div className="text-sm font-extrabold">관심기업 추가·삭제 (최대 20개)</div><div className="relative flex flex-wrap gap-2"><input value={alertCompanySearch} onChange={(e) => setAlertCompanySearch(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter" && alertCompanySearch.trim()) { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); } }} placeholder="기업명 검색" className="min-w-[220px] flex-1 rounded-lg border px-3 py-2 text-sm"/><button type="button" disabled={!alertCompanySearch.trim() || isRefreshingApi} onClick={async () => { const name = await handleFetchOrRegisterCompany(alertCompanySearch); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="rounded-lg bg-emerald-800 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">기업 등록하기</button>{alertCompanySuggestions.length > 0 && <div className="absolute left-0 top-full z-30 mt-1 max-h-60 w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">{alertCompanySuggestions.map((item) => <button type="button" key={item.code} onClick={async () => { const name = await handleFetchOrRegisterCompany(item.name); if (name) { setAlertCompanyNames((prev) => [...new Set([...prev, name])].slice(0,20)); setAlertViewCompanyName(name); setAlertStatus(`${name}을 등록하고 관심기업에 추가했습니다.`); } setAlertCompanySearch(""); setAlertCompanySuggestions([]); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><span className="font-bold">{item.name}</span><span className="ml-2 text-slate-500">{item.stock || item.code}</span></button>)}</div>}</div><div className="flex flex-wrap gap-2">{alertCompanyNames.map((name) => <span key={name} className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{name}<button type="button" title={`${name} 관심기업에서 삭제`} onClick={() => setAlertCompanyNames((prev) => prev.filter((item) => item !== name))} className="text-slate-500 hover:text-rose-600"><X className="h-3.5 w-3.5" /></button></span>)}{!alertCompanyNames.length && <span className="text-xs text-slate-500">관심기업이 없습니다. 위에서 기업을 검색하거나 선택하세요.</span>}</div><div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600"><div>상태: {alertStatus}</div><div className="mt-1">마지막 성공 조회: {lastAlertCheck || "아직 없음"}</div></div></div>
           <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-extrabold text-slate-900">{alertDisplayCompany.corpName} 공시 현황</h2><p className="mt-1 text-xs text-slate-500">최근 6개월 접수 공시 · 최신순</p></div><div className="flex flex-wrap items-center gap-2"><label htmlFor="alert-view-company" className="text-xs font-semibold text-slate-600">기업 선택</label><select id="alert-view-company" aria-label="공시 현황 기업 선택" value={alertDisplayCompany.corpName} onChange={(e) => setAlertViewCompanyName(e.target.value)} className="max-w-[220px] rounded-lg border px-3 py-2 text-xs font-semibold">{companies.map((item) => <option key={item.corpName} value={item.corpName}>{item.corpName}</option>)}</select><button type="button" onClick={() => setCompanyFilingsRefreshNonce((n) => n + 1)} disabled={isLoadingCurrentFilings} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">{isLoadingCurrentFilings ? "조회 중…" : "새로고침"}</button></div></div>{displayedCompanyFilings.length ? <div className="divide-y divide-slate-100">{displayedCompanyFilings.slice(0, 20).map((filing) => <a key={filing.rceptNo} href={filing.url} target="_blank" rel="noreferrer" className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-emerald-50/50"><span className="w-[82px] text-xs tabular-nums text-slate-500">{filing.receiptDate.slice(0,4)}.{filing.receiptDate.slice(4,6)}.{filing.receiptDate.slice(6,8)}</span><span className="min-w-0 flex-1 text-sm font-semibold text-slate-800">{filing.reportName}</span><ExternalLink className="h-3.5 w-3.5 text-emerald-700" /></a>)}</div> : <div className="p-5 text-sm text-slate-500">{isLoadingCurrentFilings ? "DART 공시목록을 조회하고 있습니다…" : currentFilingsMessage}</div>}<p className="border-t border-slate-100 p-3 text-[11px] text-slate-500">{currentFilingsMessage} · 화면 활성 시 15초 간격 자동 확인</p></section>
         </section>}
