@@ -39,7 +39,35 @@ test('암호문·IV·태그 변조, 기존 1시간 토큰, 빈 토큰 모두 거
 test('운영자 환경변수로 사용자 코드 우회 불가',async()=>{const old=process.env.OPENDART_API_KEY;process.env.OPENDART_API_KEY=keyB;try{const f=fixture();assert.equal((await f.invoke('POST','/api/agent/query',{question:'매출액 조회',dartApiKey:keyA})).statusCode,401);}finally{if(old===undefined)delete process.env.OPENDART_API_KEY;else process.env.OPENDART_API_KEY=old;}});
 test('잘못된 키와 질문 차단',async()=>{const f=fixture();for(const key of ['',123,'abc','DEMO'+'a'.repeat(36)])assert.equal((await f.invoke('POST','/api/agent/session',{dartApiKey:key})).statusCode,400);const t=await connect(f);for(const question of ['',null,'x'.repeat(301)])assert.equal((await f.invoke('POST','/api/agent/query',{sessionToken:t,question})).statusCode,400);});
 test('실패시 원본 키를 오류 응답에 노출하지 않음',async()=>{const f=fixture(async()=>{throw new Error(keyA);});const t=await connect(f);const r=await query(f,t);assert.equal(r.statusCode,502);assert.ok(!JSON.stringify(r.body).includes(keyA));assert.equal(r.headers['Cache-Control'],'no-store');});
-test('실제 폐기되지 않은 코드를 해제했다고 응답하지 않음',async()=>{const f=fixture();const t=await connect(f);const r=await f.invoke('POST','/api/agent/session/revoke',{sessionToken:t});assert.equal(r.statusCode,410);assert.equal(r.body.revoked,false);assert.equal((await query(f,t)).statusCode,200);});
+test('실제 폐기되지 않은 코드를 해제했다고 응답하지 않음',async()=>{const f=fixture();const t=await connect(f);const r=await f.invoke('POST','/api/agent/session/revoke',{sessionToken:t});assert.equal(r.statusCode,503);assert.equal(r.body.revoked,false);assert.equal((await query(f,t)).statusCode,200);});
 test('연결창 스크립트 구문·저장소 미사용·기밀 캐시 금지',async()=>{const f=fixture();const r=await f.invoke('GET','/agent-connect');assert.equal(r.headers['Cache-Control'],'no-store');assert.match(r.headers['Content-Security-Policy'],/frame-ancestors 'none'/);assert.ok(!/localStorage|sessionStorage|\?dartApiKey/.test(r.body));assert.doesNotThrow(()=>new Function(r.body.match(/<script>([\s\S]*?)<\/script>/)[1]));assert.match(r.body,/만료 시간 없음/);});
 test('발급 제한은 분당20회, 1분 후 재시도 가능',async()=>{const f=fixture();for(let i=0;i<20;i++)await connect(f);assert.equal((await f.invoke('POST','/api/agent/session',{dartApiKey:keyA})).statusCode,429);f.advance(60_001);await connect(f);});
 test('조회 제한은 IP별 분당60회, 1분 후 재시도 가능',async()=>{const f=fixture();const t=await connect(f);for(let i=0;i<60;i++)assert.equal((await query(f,t)).statusCode,200);assert.equal((await query(f,t)).statusCode,429);f.advance(60_001);assert.equal((await query(f,t)).statusCode,200);});
+
+test('개별 코드 폐기는 재등록 후에도 유지되고 다른 코드는 그대로 사용',async()=>{
+ const fs=await import('node:fs/promises'),os=await import('node:os'),path=await import('node:path');
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dart-revoke-')),oldFile=process.env.AGENT_REVOCATION_FILE;
+ process.env.AGENT_REVOCATION_FILE=path.join(dir,'revoked.json');
+ try{
+  const f=fixture(),a=await connect(f),b=await connect(f);
+  assert.equal((await f.invoke('GET','/api/agent/health')).body.individualRevocationConfigured,true);
+  const result=await f.invoke('POST','/api/agent/session/revoke',{sessionToken:a});assert.equal(result.body.revoked,true);
+  assert.equal((await query(f,a)).statusCode,401);assert.equal((await query(f,b)).statusCode,200);
+  f.stop();const fresh=fixture();assert.equal((await query(fresh,a)).body.code,'CONNECTION_REVOKED');assert.equal((await query(fresh,b)).statusCode,200);
+  const stored=await fs.readFile(process.env.AGENT_REVOCATION_FILE,'utf8');assert.ok(!stored.includes(keyA));assert.ok(!stored.includes(a));
+ }finally{if(oldFile===undefined)delete process.env.AGENT_REVOCATION_FILE;else process.env.AGENT_REVOCATION_FILE=oldFile;await fs.rm(dir,{recursive:true,force:true});}
+});
+test('폐기 저장소가 고장 나면 조회를 허용하거나 폐기 성공이라고 응답하지 않음',async()=>{
+ const oldUrl=process.env.AGENT_REVOCATION_REDIS_URL,oldToken=process.env.AGENT_REVOCATION_REDIS_TOKEN,oldFetch=globalThis.fetch;
+ process.env.AGENT_REVOCATION_REDIS_URL='https://fixture.test';process.env.AGENT_REVOCATION_REDIS_TOKEN='test';
+ globalThis.fetch=async()=>new Response('',{status:503});
+ try{const f=fixture(),a=await connect(f);assert.equal((await query(f,a)).statusCode,503);const result=await f.invoke('POST','/api/agent/session/revoke',{sessionToken:a});assert.equal(result.statusCode,503);assert.equal(result.body.revoked,false);}
+ finally{globalThis.fetch=oldFetch;for(const [name,value] of [['AGENT_REVOCATION_REDIS_URL',oldUrl],['AGENT_REVOCATION_REDIS_TOKEN',oldToken]]){if(value===undefined)delete process.env[name];else process.env[name]=value;}}
+});
+test('Redis REST 폐기 기록은 다른 서버 인스턴스에서도 확인',async()=>{
+ const oldUrl=process.env.AGENT_REVOCATION_REDIS_URL,oldToken=process.env.AGENT_REVOCATION_REDIS_TOKEN,oldFetch=globalThis.fetch;
+ process.env.AGENT_REVOCATION_REDIS_URL='https://fixture.test';process.env.AGENT_REVOCATION_REDIS_TOKEN='test';const records=new Set();
+ globalThis.fetch=async(_url,init)=>{const [command,id]=JSON.parse(init.body);assert.match(id,/^dart-finder:revoked:[a-f0-9]{64}$/);if(command==='SET'){records.add(id);return Response.json({result:'OK'});}return Response.json({result:records.has(id)?1:0});};
+ try{const f=fixture(),a=await connect(f);assert.equal((await query(f,a)).statusCode,200);assert.equal((await f.invoke('POST','/api/agent/session/revoke',{sessionToken:a})).body.revoked,true);const another=fixture();assert.equal((await query(another,a)).body.code,'CONNECTION_REVOKED');}
+ finally{globalThis.fetch=oldFetch;for(const [name,value] of [['AGENT_REVOCATION_REDIS_URL',oldUrl],['AGENT_REVOCATION_REDIS_TOKEN',oldToken]]){if(value===undefined)delete process.env[name];else process.env[name]=value;}}
+});

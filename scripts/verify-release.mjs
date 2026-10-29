@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const required=['client/src/pages/Home.tsx','client/src/lib/comparisonLoader.ts','client/src/lib/filingPolling.ts','shared/dartAccounts.ts','server/dart/statementRecovery.ts','server/_core/index.ts','server/_core/userAgent.ts','server/_core/agentRevocation.ts'];
+for(const file of required)if(!fs.existsSync(path.join(root,file)))throw new Error(`필수 파일 누락: ${file}. 전체 ZIP의 폴더 구조를 함께 적용하세요.`);
+const read=file=>fs.readFileSync(path.join(root,file),'utf8');
+if(!read('server/_core/index.ts').includes('registerUserAgentRoutes(app, askDart);'))throw new Error('에이전트 연결 경로가 서버에 등록되지 않았습니다.');
+const home=read('client/src/pages/Home.tsx');
+if(!home.includes('DART FINDER') || home.includes('AdvancedAnalysisPanel'))throw new Error('Home.tsx가 최종 버전과 다릅니다.');
+console.log('DART FINDER release contract passed.');
