@@ -167,6 +167,12 @@ function selectTargetColumns(headers: string[], period: Period, beforeContext: s
   const contextAmbiguous = new Set(contextDates).size > 1;
   const named = columns.filter(col => isCurrentHeader(col.header,period));
   if (named.length === 1 && !contextAmbiguous) return named;
+  if (named.length > 1 && !contextAmbiguous) {
+    // A merged current-period header may span separate current/noncurrent
+    // liability columns. Both are required to reconstruct total lease debt.
+    const liquidity = named.map(({header}) => /비유동/.test(header) ? "noncurrent" : /유동/.test(header) ? "current" : "unknown");
+    if (named.length === 2 && new Set(liquidity).size === 2 && !liquidity.includes("unknown")) return named;
+  }
   if (named.length > 1) return [];
   if (contextAmbiguous) return [];
   const ordinal = ordinalCurrentColumns(headers, period, beforeContext.slice(-400));
