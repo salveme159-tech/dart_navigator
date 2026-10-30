@@ -1,5 +1,6 @@
 // 공시 계정 및 금액 해석을 서버와 브라우저에서 함께 사용합니다.
 export type Row = {
+  ord?: string | number;
   fs_div?: string;
   bsns_year?: string;
   reprt_code?: string;
