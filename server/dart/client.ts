@@ -358,9 +358,9 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const normalize = normalizeAccountName;
   const excluded = /사채할인발행차금|차입금할인발행차금|미상각할인차금|할인발행차금|상환할증금|사채발행비|총차입금|차입금총계|차입금합계|총차입부채|차입금및사채|차입금및회사채|차입금과사채/;
   const groups: Array<{ group: string; aliases: string[]; ids: RegExp[]; lease?: boolean; preferAggregate?: string[]; preferSingle?: string[] }> = [
-    { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings|CurrentLoansReceivedAndCurrentPortionOfNoncurrentLoansReceived/i], preferSingle: ["단기차입금", "단기차입부채"] },
-    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성회사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfNoncurrentBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings|CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued|CurrentPortionOfConvertibleBonds/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
-    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent|NoncurrentPortionOfOtherNoncurrentBorrowings|NoncurrentPortionOfNoncurrentLoansReceived/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
+    { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금", "유동성단기차입금", "단기금융기관차입금및유동성장기차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings|CurrentLoansReceivedAndCurrentPortionOfNoncurrentLoansReceived|CurrentLoansReceived|CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings/i], preferSingle: ["단기차입금", "단기차입부채"] },
+    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성회사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfNoncurrentBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings|CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued|CurrentPortionOfConvertibleBonds|CurrentPortionOfBondsIssued|CurrentPortionOfNoncurrentLoansReceived/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
+    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent|NoncurrentPortionOfOtherNoncurrentBorrowings|NoncurrentPortionOfNoncurrentLoansReceived|NoncurrentLoansReceived|NoncurrentPortionOfNoncurrentBorrowings/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
     { group: "사채", aliases: ["사채", "회사채", "비유동사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^ifrs-full_BondsIssued$|NoncurrentPortionOfNoncurrentBondsIssued|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i], preferSingle: ["사채", "회사채"] },
     { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
     { group: "비유동리스부채", aliases: ["비유동리스부채", "장기리스부채", "비유동리스부채합계"], ids: [/NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent/i], lease: true, preferSingle: ["비유동리스부채", "장기리스부채"] },
@@ -481,7 +481,7 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   // '차입금및사채'처럼 차입금과 사채를 한 줄로 묶어 공시하는 계정(구성 계정이 따로 없을 때만 합계로 사용).
   const combinedRow = bsRows.find((row) => /^(?:차입금및사채|차입금및회사채|차입금과사채|차입금및사채합계)$/.test(normalize(row.account_nm)) && (() => { const v = amountOf(row); return v !== null && Number.isFinite(v); })()) ?? null;
   return {
-    items, coreFound, coreComplete: selectedCore.every((item) => item.selected.length > 0) || reportedScopeComplete, fullBalanceSheet,
+    items, coreFound, coreComplete: reportedScopeComplete || selectedCore.every((item) => item.selected.length > 0), fullBalanceSheet,
     total: items.reduce((sum, item) => sum + item.value, 0),
     missing: reportedScopeComplete ? [] : selectedCore.filter((item) => item.selected.length === 0).map((item) => item.spec.group),
     combinedRow,
@@ -565,6 +565,17 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
     if (selected) return { value: selected.value, unit: "억원",
       lines: [`원천 계정: ${selected.row.account_nm}`], formula: null,
       disclaimer: null, sourceHeading: `손익계산서 > ${selected.row.account_nm}` };
+    // In Q1, the quarter and year-to-date periods coincide. Some filings provide
+    // only thstrm_amount and a non-standard aggregate profit/loss account name.
+    const candidates = rows.filter(row => (row.sj_div === "CIS" || row.sj_div === "IS") &&
+      (!row.fs_div || row.fs_div === basis) &&
+      !/귀속|지배|비지배|세전|법인세차감전|계속영업|중단영업|주당|이익률/.test(normalizeAccountName(row.account_nm)) &&
+      (/^(?:ifrs-full|ifrs)_ProfitLoss$/i.test(row.account_id ?? "") ||
+        /^(?:연결)?(?:당)?(?:제\d+기)?(?:1분기|제1분기|분기|당분기|당기)?(?:순이익|순손익|순손실|순이익\(손실\)|순손익\(손실\))$/.test(normalizeAccountName(row.account_nm))));
+    for (const row of candidates) {
+      const value = periodAmount(row, period);
+      if (value !== null && Number.isFinite(value)) return {value, unit:"억원", lines:[`원천 계정: ${row.account_nm}`], formula:null, disclaimer:null, sourceHeading:`손익계산서 > ${row.account_nm}`};
+    }
   }
   if (metric === "payables") return pickDirectAccount(rows, period, "매입채무");
   if (metric === "borrowings" || metric === "borrowingsRatio") {
