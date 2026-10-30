@@ -722,3 +722,19 @@ describe("공시 원문 바로가기: 첫 화면(표지) 대신 재무제표 본
     expect(r.url).toBe("");
   });
 });
+
+describe("차입금 과거기간 범위 및 누락 방어", () => {
+  it("2018년에는 IFRS 16 이후 리스부채 계정 부재만으로 차입금 계산을 차단하지 않는다", () => {
+    const rows = [bs("단기차입금", 100), bs("유동성장기부채", 20), bs("장기차입금", 80), bs("사채", 10), bs("자산총계", 1000)];
+    const debt = pickMetric(rows, P(2018, "annual"), "borrowings");
+    expect(debt?.value).toBe(210);
+    expect(debt?.disclaimer).toContain("2019년 이전");
+    expect(pickMetric(rows, P(2018, "annual"), "borrowingsRatio")?.value).toBeCloseTo(21, 6);
+  });
+  it("2019년 이후 리스부채 미확인 부분합은 확정 총차입금으로 표시하지 않는다", () => {
+    const rows = [bs("단기차입금", 100), bs("유동성장기부채", 20), bs("장기차입금", 80), bs("사채", 10), bs("자산총계", 1000)];
+    const debt = pickMetric(rows, P(2025, "annual"), "borrowings");
+    expect(Number.isFinite(debt?.value)).toBe(false);
+    expect(debt?.partialValue).toBe(210);
+  });
+});
