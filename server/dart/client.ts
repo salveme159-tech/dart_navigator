@@ -577,6 +577,11 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
       if (value !== null && Number.isFinite(value)) return {value, unit:"억원", lines:[`원천 계정: ${row.account_nm}`], formula:null, disclaimer:null, sourceHeading:`손익계산서 > ${row.account_nm}`};
     }
   }
+  if (metric === "netIncome" && period.kind === "half") {
+    const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
+    const selected = selectAccount(rows, "순이익", period, basis);
+    if (selected) return { value: selected.value, unit: "억원", lines: [`원천 계정: ${selected.row.account_nm}`], formula: null, disclaimer: null, sourceHeading: `손익계산서 > ${selected.row.account_nm}` };
+  }
   if (metric === "payables") return pickDirectAccount(rows, period, "매입채무");
   if (metric === "borrowings" || metric === "borrowingsRatio") {
     return pickGrossBorrowingMetric(rows, period, metric);
@@ -605,6 +610,21 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
     const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
     const parts = ["매출채권", "재고자산", "매입채무"] as const;
     const selected = parts.map(name => ({ name, result: selectAccount(rows, name, period, basis) }));
+    // Secondary BS-only lookup for issuer-specific trade-and-other labels.
+    // Keep original source labels so that combined accounts are never presented as pure trade amounts.
+    const aliases: Record<string, RegExp> = {
+      "매출채권": /^(?:유동)?매출채권(?:및기타(?:유동)?(?:채권|수취채권|금융채권))?(?:합계)?(?:\(유동\))?$/,
+      "재고자산": /^(?:유동)?재고자산(?:합계)?$/,
+      "매입채무": /^(?:유동)?매입채무(?:및기타(?:유동)?(?:채무|지급채무|금융채무))?(?:합계)?(?:\(유동\))?$/,
+    };
+    for (const part of selected) {
+      if (part.result) continue;
+      const matches = rows.filter(row => row.sj_div === "BS" && (!row.fs_div || row.fs_div === basis) &&
+        aliases[part.name].test(normalizeAccountName(row.account_nm)) &&
+        !/충당금|손상|대손|비유동/.test(normalizeAccountName(row.account_nm)));
+      const available = matches.map(row => ({row, value: periodAmount(row,period)})).filter((entry): entry is {row:Row,value:number} => entry.value !== null && Number.isFinite(entry.value));
+      if (available.length === 1) part.result = {...available[0],rank:90};
+    }
     if (selected.some(item => !item.result)) return null;
     const [receivable, inventory, payable] = selected.map(item => item.result!);
     // A combined trade-and-other account is not identical to pure trade payables;
