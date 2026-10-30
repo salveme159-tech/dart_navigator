@@ -155,7 +155,12 @@ function zipStored(files: Array<[string, string]>): Blob {
   }
   const centralSize = directory.reduce((sum, p) => sum + p.length, 0);
   const end = new Uint8Array([80,75,5,6,0,0,0,0,...u16(files.length),...u16(files.length),...u32(centralSize),...u32(offset),0,0]);
-  return new Blob([...parts, ...directory, end], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  const asArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
+    const buffer = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(buffer).set(bytes);
+    return buffer;
+  };
+  return new Blob([...parts, ...directory, end].map(asArrayBuffer), {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
 }
 const save = (blob: Blob, filename: string) => { const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
 export function exportComparisonExcel(matrix: ComparisonExportMatrix) {
