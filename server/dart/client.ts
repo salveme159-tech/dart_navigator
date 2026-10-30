@@ -481,7 +481,7 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
   const nonLease = components.items.filter(item => !/리스|lease/i.test(`${item.group} ${item.account} ${item.row.account_id ?? ""}`));
   const subtotal = nonLease.reduce((sum, item) => sum + item.value, 0);
   const formula = metric === "borrowings"
-    ? "차입금 = 차입금 + 유동성장기부채 + 사채 (리스부채 미포함)"
+    ? "차입금 = 단기차입금 + 유동성장기부채 + 장기차입금 + 사채 (리스부채 미포함)"
     : "차입금 의존도 = 차입금(리스부채 미포함) ÷ 자산총계 × 100";
   const sourceHeading = "재무상태표 > 차입금·사채 (리스부채 미포함)";
   const missing = components.missing;
@@ -493,25 +493,30 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
   // If only an aggregate exists, its lease policy cannot be inferred: do not silently label it lease-excluded.
   const aggregateUsable = reported !== null && reported !== undefined && Number.isFinite(reported) &&
     nonLease.length > 0 && Math.abs(reported - subtotal) < 0.00001;
-  const confirmed = nonLease.length > 0 && components.coreComplete && Number.isFinite(subtotal);
+  const confirmed = nonLease.length > 0 && Number.isFinite(subtotal) && (components.coreComplete || aggregateUsable);
+  // An explicit borrowings-and-bonds line is non-lease by definition. Use it only
+  // when components are absent; never add it to component amounts.
+  const combinedOnly = nonLease.length === 0 && combined !== null && Number.isFinite(combined);
+  const effectiveTotal = combinedOnly ? combined! : subtotal;
   const lines = [...nonLease.map(item => `구성 · ${item.account}: ${won(item.value)}`), "리스 미포함"];
-  if (!confirmed) {
+  if (combinedOnly) lines.push(`공시 차입금및사채: ${won(effectiveTotal)} (구성 계정 별도 미확인, 중복 합산 없음)`);
+  if (!confirmed && !combinedOnly) {
     return { value: Number.NaN, partialValue: nonLease.length ? subtotal : undefined,
       missingComponents: missing, unit: metric === "borrowings" ? "억원" : "%", lines,
-      formula, disclaimer: nonLease.length ? `확인된 차입금·사채 부분합 ${won(subtotal)} (확정 총차입금 아님)` : "차입금 구성 계정 누락",
+      formula, disclaimer: nonLease.length ? `확인된 차입금·사채 부분합 ${won(subtotal)} (확정 총차입금 아님) · 미확인 ${missing.join("·") || "구성 범위"}` : "차입금 구성 계정 누락",
       sourceHeading };
   }
   if (directTotal && !aggregateUsable && Math.abs(directTotal.value! - subtotal) > 0.00001) {
     lines.push(`공시 합계 ${won(directTotal.value!)}와 구성 계정 합계 ${won(subtotal)}의 차이를 확인해야 합니다.`);
   }
-  if (metric === "borrowings") return { value: subtotal, unit: "억원", lines, formula, disclaimer: null, sourceHeading };
+  if (metric === "borrowings") return { value: effectiveTotal, unit: "억원", lines, formula, disclaimer: combinedOnly ? "차입금및사채 공시 합계 사용(리스 미포함, 세부 구성 미확인)" : null, sourceHeading };
   const assetsResolved = resolveBalanceTotal(rows, period, "자산총계");
   const assets = assetsResolved?.value;
   if (assets === undefined || !Number.isFinite(assets) || assets <= 0) {
     return { value: Number.NaN, unit: "%", lines, formula, disclaimer: "자산총계 확인 실패", sourceHeading };
   }
-  const ratio = subtotal / assets * 100;
-  return { value: ratio, unit: "%", lines: [...lines, `분자 · 차입금 ${won(subtotal)}`, `분모 · 자산총계 ${won(assets)}`,
+  const ratio = effectiveTotal / assets * 100;
+  return { value: ratio, unit: "%", lines: [...lines, `분자 · 차입금 ${won(effectiveTotal)}`, `분모 · 자산총계 ${won(assets)}`,
     ...(assetsResolved?.derived ? assetsResolved.lines : []), `계산 · ${ratio.toFixed(2)}%`], formula, disclaimer: null, sourceHeading };
 }
 
