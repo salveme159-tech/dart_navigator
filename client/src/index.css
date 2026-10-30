@@ -592,3 +592,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid #22c7a5; outline-
 .natural-query-guide strong { color: #d7f5ef; font-size: 9px; }
 .natural-query-guide b { color: #b8ded8; }
 .natural-query-guide small { color: #779b97; font-size: 8px; }
+
+/* Results table: centered and two points larger than original 12px text. */
+.dart-results-table th, .dart-results-table td { text-align: center !important; font-size: 14.67px !important; }
+.dart-results-table td > div { text-align: center; }
+.dart-results-table td .text-\[10px\], .dart-results-table td .text-\[11px\] { font-size: 12px !important; }
