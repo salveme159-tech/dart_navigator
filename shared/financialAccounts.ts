@@ -177,9 +177,9 @@ export const ACCOUNT_SPECS: Record<string, { sj: string[]; names: string[]; ids?
   유동부채: { sj: ["BS"], names: ["유동부채", "유동부채합계"], ids: [/^ifrs-full_CurrentLiabilities$/i] },
   현금및현금성자산: { sj: ["BS"], names: ["현금및현금성자산", "현금과현금성자산", "현금및현금성자산합계"], ids: [/^ifrs-full_CashAndCashEquivalents$/i] },
   단기금융상품: { sj: ["BS"], names: ["단기금융상품", "단기투자자산", "단기예치금", "단기금융자산"], ids: [/ShortTermDepositsNotClassifiedAsCashEquivalents/i] },
-  매출채권: { sj: ["BS"], names: ["매출채권", "매출채권및기타채권", "매출채권및기타유동채권", "유동매출채권"], ids: [/^(?:ifrs-full|ifrs)_(?:TradeAndOtherCurrentReceivables|TradeAndOtherReceivablesCurrent|CurrentTradeAndOtherReceivables|TradeReceivablesCurrent)$/i], exclude: [/대손충당금|손상차손누계|기대신용손실충당금/] },
+  매출채권: { sj: ["BS"], names: ["매출채권", "매출채권및기타채권", "매출채권및기타유동채권", "유동매출채권", "유동매출채권및기타채권", "매출채권및기타수취채권", "매출채권및기타금융채권", "매출채권및기타수취채권(유동)"], ids: [/^(?:ifrs-full|ifrs)_(?:TradeAndOtherCurrentReceivables|TradeAndOtherReceivablesCurrent|CurrentTradeAndOtherReceivables|TradeReceivablesCurrent|TradeReceivables|CurrentTradeReceivables|TradeAndOtherReceivables|TradeAndOtherReceivablesCurrent)$/i], exclude: [/대손충당금|손상차손누계|기대신용손실충당금/] },
   재고자산: { sj: ["BS"], names: ["재고자산", "유동재고자산", "재고자산합계"], ids: [/^ifrs-full_Inventories$/i] },
-  매입채무: { sj: ["BS"], names: ["매입채무", "매입채무및기타채무", "매입채무및기타유동채무", "유동매입채무", "매입채무합계"], ids: [/^(?:ifrs-full|ifrs)_(?:TradeAndOtherCurrentPayables|TradeAndOtherPayablesCurrent|CurrentTradeAndOtherPayables|TradePayablesCurrent)$/i], exclude: [/미지급금|충당부채|리스부채/] },
+  매입채무: { sj: ["BS"], names: ["매입채무", "매입채무및기타채무", "매입채무및기타유동채무", "유동매입채무", "매입채무합계", "유동매입채무및기타채무", "매입채무및기타지급채무", "매입채무및기타금융채무"], ids: [/^(?:ifrs-full|ifrs)_(?:TradeAndOtherCurrentPayables|TradeAndOtherPayablesCurrent|CurrentTradeAndOtherPayables|TradePayablesCurrent|TradePayables|CurrentTradePayables|TradeAndOtherPayables|TradeAndOtherPayablesCurrent)$/i], exclude: [/미지급금|충당부채|리스부채/] },
   단기차입금: { sj: ["BS"], names: ["단기차입금", "단기차입금및회사채", "단기대출금", "단기금융부채"], ids: [/ShorttermBorrowings|CurrentFinancialInstitutionBorrowings/i], exclude: [/리스부채/] },
   유동성장기부채: { sj: ["BS"], names: ["유동성장기부채", "유동성장기차입금", "유동성사채", "유동성장기사채", "비유동차입금의유동성대체부분", "유동성장기부채및사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities/i], exclude: [/리스부채/] },
   사채: { sj: ["BS"], names: ["사채", "회사채", "비유동사채"], ids: [/^ifrs-full_BondsIssued$/i], exclude: [/유동성|리스|할인발행차금/] },
@@ -190,7 +190,7 @@ export const ACCOUNT_SPECS: Record<string, { sj: string[]; names: string[]; ids?
 
 Object.assign(ACCOUNT_SPECS, {
   영업이익: {sj:["CIS","IS"], names:["영업이익","영업이익(손실)","영업손익","영업손실"], ids:[/^(?:dart_OperatingIncomeLoss|ifrs-full_ProfitLossFromOperatingActivities)$/i], exclude:[/영업외|중단영업|계속영업|부문|조정|이익률/]},
-  순이익: {sj:["CIS","IS"], names:["당기순이익","당기순이익(손실)","당기순손익","반기순손익","분기순손익","분기순손익(손실)","반기순이익","분기순이익","분기순이익(손실)","당분기순이익","당분기순이익(손실)","당분기순손익","당분기순손익(손실)","분기연결순손익","분기연결순이익","연결분기순손익","연결분기순이익","분기연결순이익","연결당기순이익","연결당기순이익(손실)","당기순손실"], ids:[/^(?:ifrs-full|ifrs)_ProfitLoss$/i], exclude:[/귀속|지배|비지배|계속영업|중단영업|주당|세전|법인세차감전|순이익률/]},
+  순이익: {sj:["CIS","IS"], names:["당기순이익","당기순이익(손실)","당기순손익","반기순손익","분기순손익","분기순손익(손실)","반기순이익","분기순이익","분기순이익(손실)","당분기순이익","당분기순이익(손실)","당분기순손익","당분기순손익(손실)","분기연결순손익","분기연결순이익","연결분기순손익","연결분기순이익","분기연결순이익","연결당기순이익","연결당기순이익(손실)","당기순손실","연결분기순손익(손실)","연결반기순손익(손실)","연결분기순이익(손실)","연결반기순이익(손실)","분기연결순이익(손실)","반기연결순이익(손실)","분기순이익(손실)","반기순이익(손실)"], ids:[/^(?:ifrs-full|ifrs)_ProfitLoss$/i], exclude:[/귀속|지배|비지배|계속영업|중단영업|주당|세전|법인세차감전|순이익률/]},
   이자비용: {sj:["CIS","IS"], names:["이자비용","이자비용(금융원가)"], ids:[/^ifrs-full_InterestExpense$/i]},
   영업현금흐름: {sj:["CF"],names:["영업활동으로인한현금흐름","영업활동현금흐름","영업활동순현금흐름"],ids:[/^ifrs-full_CashFlowsFromUsedInOperatingActivities$/i]},
   투자활동현금흐름: {sj:["CF"],names:["투자활동으로인한현금흐름","투자활동현금흐름","투자활동순현금흐름"],ids:[/^ifrs-full_CashFlowsFromUsedInInvestingActivities$/i]},
@@ -216,7 +216,10 @@ export function selectAccount(rows: Row[], term: string, period?: AccountPeriod,
     const id = spec?.ids?.some(re => re.test(row.account_id ?? ""));
     const exact = names.indexOf(name);
     const prefix = names.some(n => n.length >= 3 && name.startsWith(n) && !/채권|원가|총이익|충당금/.test(name.slice(n.length)));
-    if (!id && exact < 0 && !prefix) return [];
+    const netIncomeVariant = term === "순이익" && /(?:순이익|순손익|순손실)(?:\(손실\))?$/.test(name)
+      && /^(?:연결|당기|당분기|당반기|분기|반기|제\d+기|제\d+기분기|제\d+기반기)/.test(name)
+      && !/귀속|지배|비지배|계속영업|중단영업|주당|세전|법인세차감전|순이익률/.test(name);
+    if (!id && exact < 0 && !prefix && !netIncomeVariant) return [];
     const value = period ? periodAmount(row, period) : amountOf(row,0,true);
     if (value === null) return [];
     return [{row, value, rank: sectionRank(row.sj_div ?? "") * 100 + (id ? 0 : exact >= 0 ? 10 + exact : 70)}];
