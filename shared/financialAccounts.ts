@@ -90,7 +90,7 @@ export const normalizeAccountName = (value?: string) => (value ?? "").normalize(
 
 const STANDARD_ACCOUNTS: Array<{names:string[]; ids:RegExp; exclude?:RegExp}> = [
   {names:["영업이익","영업이익(손실)","영업손익","영업손실"], ids:/^(?:dart_OperatingIncomeLoss|ifrs-full_ProfitLossFromOperatingActivities)$/i, exclude:/영업외|중단영업|계속영업|영업이익률|부문|조정/},
-  {names:["당기순이익","당기순이익(손실)","당기순손익","반기순손익","분기순손익","분기순손익(손실)","반기순이익","분기순이익","분기순이익(손실)","당분기순이익","당분기순이익(손실)","연결분기순이익","분기연결순이익","연결당기순이익","연결당기순이익(손실)","당기순손실"],ids:/^(?:ifrs-full|ifrs)_ProfitLoss$/i,exclude:/귀속|지배|비지배|계속영업|중단영업|주당|세전|법인세차감전|순이익률/},
+  {names:["당기순이익","당기순이익(손실)","당기순손익","반기순손익","분기순손익","분기순손익(손실)","반기순이익","분기순이익","분기순이익(손실)","당분기순이익","당분기순이익(손실)","당분기순손익","당분기순손익(손실)","연결분기순이익","분기연결순이익","연결당기순이익","연결당기순이익(손실)","당기순손실"],ids:/^(?:ifrs-full|ifrs)_ProfitLoss$/i,exclude:/귀속|지배|비지배|계속영업|중단영업|주당|세전|법인세차감전|순이익률/},
   {names:["자산총계"],ids:/^ifrs-full_Assets$/i},
   {names:["부채총계"],ids:/^ifrs-full_Liabilities$/i},
   {names:["자본총계"],ids:/^ifrs-full_Equity$/i,exclude:/지배|비지배/},
@@ -190,7 +190,7 @@ export const ACCOUNT_SPECS: Record<string, { sj: string[]; names: string[]; ids?
 
 Object.assign(ACCOUNT_SPECS, {
   영업이익: {sj:["CIS","IS"], names:["영업이익","영업이익(손실)","영업손익","영업손실"], ids:[/^(?:dart_OperatingIncomeLoss|ifrs-full_ProfitLossFromOperatingActivities)$/i], exclude:[/영업외|중단영업|계속영업|부문|조정|이익률/]},
-  순이익: {sj:["CIS","IS"], names:["당기순이익","당기순이익(손실)","당기순손익","반기순손익","분기순손익","분기순손익(손실)","반기순이익","분기순이익","분기순이익(손실)","당분기순이익","당분기순이익(손실)","연결분기순이익","분기연결순이익","연결당기순이익","연결당기순이익(손실)","당기순손실"], ids:[/^(?:ifrs-full|ifrs)_ProfitLoss$/i], exclude:[/귀속|지배|비지배|계속영업|중단영업|주당|세전|법인세차감전|순이익률/]},
+  순이익: {sj:["CIS","IS"], names:["당기순이익","당기순이익(손실)","당기순손익","반기순손익","분기순손익","분기순손익(손실)","반기순이익","분기순이익","분기순이익(손실)","당분기순이익","당분기순이익(손실)","당분기순손익","당분기순손익(손실)","연결분기순이익","분기연결순이익","연결당기순이익","연결당기순이익(손실)","당기순손실"], ids:[/^(?:ifrs-full|ifrs)_ProfitLoss$/i], exclude:[/귀속|지배|비지배|계속영업|중단영업|주당|세전|법인세차감전|순이익률/]},
   이자비용: {sj:["CIS","IS"], names:["이자비용","이자비용(금융원가)"], ids:[/^ifrs-full_InterestExpense$/i]},
   영업현금흐름: {sj:["CF"],names:["영업활동으로인한현금흐름","영업활동현금흐름","영업활동순현금흐름"],ids:[/^ifrs-full_CashFlowsFromUsedInOperatingActivities$/i]},
   투자활동현금흐름: {sj:["CF"],names:["투자활동으로인한현금흐름","투자활동현금흐름","투자활동순현금흐름"],ids:[/^ifrs-full_CashFlowsFromUsedInInvestingActivities$/i]},
