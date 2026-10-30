@@ -738,3 +738,27 @@ describe("차입금 과거기간 범위 및 누락 방어", () => {
     expect(debt?.partialValue).toBe(210);
   });
 });
+
+
+describe("전체 BS 범위 판정 회귀", () => {
+  it("ALL 재무상태표에서 차입금 종류가 일부만 공시된 2018년은 없는 사채를 필수 누락으로 취급하지 않는다", () => {
+    const base = [
+      bs("자산총계", 1000), bs("부채총계", 400), bs("자본총계", 600),
+      bs("유동자산", 500), bs("비유동자산", 500), bs("유동부채", 200),
+      bs("비유동부채", 200), bs("유동성장기부채", 120),
+    ].map((row, i) => ({ ...row, source_type: "ALL" as const, fs_div: "CFS", account_detail: i % 2 ? "-" : "-" }));
+    const debt = pickMetric(base, P(2018, "annual"), "borrowings");
+    expect(debt?.value).toBe(120);
+    expect(pickMetric(base, P(2018, "annual"), "borrowingsRatio")?.value).toBeCloseTo(12, 6);
+  });
+  it("같은 ALL 재무상태표라도 2025년 리스부채가 미확인되면 확정 총차입금으로 단정하지 않는다", () => {
+    const base = [
+      bs("자산총계", 1000), bs("부채총계", 400), bs("자본총계", 600),
+      bs("유동자산", 500), bs("비유동자산", 500), bs("유동부채", 200),
+      bs("비유동부채", 200), bs("유동성장기부채", 120),
+    ].map(row => ({ ...row, source_type: "ALL" as const, fs_div: "CFS" }));
+    const debt = pickMetric(base, P(2025, "annual"), "borrowings");
+    expect(Number.isNaN(debt?.value)).toBe(true);
+    expect(debt?.partialValue).toBe(120);
+  });
+});
