@@ -24,9 +24,9 @@ import {
   Printer,
 } from "lucide-react";
 import {
-  exportRowsToCsvExcel,
-  exportRowsToPrintablePdf,
-  ExportTableRow,
+  exportComparisonExcel,
+  exportComparisonPdf,
+  type ComparisonExportMatrix,
 } from "@/lib/xlsxExport";
 import {
   CompanyFinancialRecord,
@@ -1126,29 +1126,32 @@ export default function Home() {
   }, [askExecutedQuery]);
 
 
-  const compareExportRows: ExportTableRow[] = useMemo(() => {
-    const rows: ExportTableRow[] = [];
-    compareMetricIds.forEach((mId) => {
-      const mDef = METRIC_DEFINITIONS.find((m) => m.id === mId);
-      const liveRows = liveCompareResults[mId] ?? [];
-      if (!mDef) return;
-      liveRows.forEach((row) => {
-        rows.push({
-          corpName: row.company,
-          metricName: mDef.label,
-          period: row.period || "기간 미확인",
-          valueFormatted: row.found && Number.isFinite(row.value) ? formatMetricValue(row.value as number, mDef.unit) : "자료 없음",
-          rawUnitValue: row.found && Number.isFinite(row.value) ? `${row.value} (${row.unit})` : "N/A",
-          formulaOrAccount: row.message ?? mDef.formulaText,
-          sourceReport: `${row.period || "자료 미확인"} · ${row.source || "출처 미확인"} · ${row.citation || ""}`,
-          basis: row.basis,
-          sourceUrls: metricSourceLinks(row.citation,row.rceptNo).map(item=>item.url).join(" | "),
-          rceptNo: row.rceptNo ?? "미확인",
-        });
+  // Export uses the same selected companies, metric order, values and source links as the visible comparison table.
+  const comparisonExportMatrix: ComparisonExportMatrix = useMemo(() => {
+    const metrics = compareMetricIds.map(id => METRIC_DEFINITIONS.find(m => m.id === id)?.label ?? id);
+    const cells: ComparisonExportMatrix["cells"] = {};
+    const sources: ComparisonExportMatrix["sources"] = {};
+    for (const name of compareCorpNames) {
+      cells[name] = {};
+      for (let i = 0; i < compareMetricIds.length; i++) {
+        const id = compareMetricIds[i];
+        const def = METRIC_DEFINITIONS.find(m => m.id === id);
+        const row = (liveCompareResults[id] ?? []).find(item => item.company === name);
+        const verified = Boolean(row?.found && row.value !== null && Number.isFinite(row.value));
+        cells[name][metrics[i]] = {
+          text: verified && def ? formatMetricValue(row!.value as number, def.unit) : "수치 미검증",
+          verified,
+        };
+      }
+      const links = compareMetricIds.flatMap(id => {
+        const row = (liveCompareResults[id] ?? []).find(item => item.company === name);
+        return metricSourceLinks(row?.citation, row?.rceptNo);
       });
-    });
-    return rows;
-  }, [compareMetricIds, liveCompareResults]);
+      const distinct = [...new Map(links.map(link => [link.url, link])).values()];
+      sources[name] = distinct.length ? {label: distinct.length === 1 ? distinct[0].label : "출처 보기", url: distinct[0].url} : {label:"출처 미확인",url:""};
+    }
+    return {companies:compareCorpNames, metrics, cells, sources};
+  }, [compareCorpNames, compareMetricIds, liveCompareResults]);
 
   const toggleCompareMetric = (metricId: string) => {
     setCompareValidationMsg("");
@@ -1740,7 +1743,7 @@ export default function Home() {
               <div className="flex items-center gap-2 print:hidden">
                 <button disabled={isRefreshingCompare}
                   onClick={() =>
-                    exportRowsToPrintablePdf("기업별_공시값_비교분석_보고서", compareExportRows)
+                    exportComparisonPdf(comparisonExportMatrix)
                   }
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700"
                 >
@@ -1749,7 +1752,7 @@ export default function Home() {
                 </button>
                 <button disabled={isRefreshingCompare}
                   onClick={() =>
-                    exportRowsToCsvExcel("기업별_공시값_비교분석.csv", compareExportRows)
+                    exportComparisonExcel(comparisonExportMatrix)
                   }
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-xs font-bold text-white"
                 >
