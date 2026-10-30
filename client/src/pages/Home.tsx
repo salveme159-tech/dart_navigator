@@ -201,7 +201,7 @@ export const METRIC_DEFINITIONS: MetricDefinition[] = [
     label: "차입금 의존도",
     category: "운전자본/차입금",
     unit: "%",
-    formulaText: "(총차입금(리스부채 포함) ÷ 자산총계) × 100",
+    formulaText: "(차입금(리스부채 미포함) ÷ 자산총계) × 100",
     aliases: ["차입금의존도", "차입금 의존도"],
     compute: (c) => c.serverMetrics?.borrowingsRatio?.value ?? Number.NaN,
   },
@@ -210,7 +210,7 @@ export const METRIC_DEFINITIONS: MetricDefinition[] = [
     label: "차입금",
     category: "운전자본/차입금",
     unit: "억원",
-    formulaText: "단기차입금 + 유동성장기부채 + 사채 + 장기차입금 + 리스부채",
+    formulaText: "단기차입금 + 유동성장기부채 + 사채 + 장기차입금 (리스부채 미포함)",
     aliases: ["차입금", "총차입금"],
     compute: (c) => c.serverMetrics?.borrowings?.value ?? Number.NaN,
   },
@@ -1585,7 +1585,7 @@ export default function Home() {
                         </div>
                         {hasAuthoritativeMetric && !Number.isFinite(serverMetricValue) && !Number.isFinite(val) && (
                           <div className="mt-1 text-[10px] leading-relaxed text-amber-700">
-                            {metricDisclaimerForDisplay || "필요한 공시 원천 계정을 확인하지 못했습니다. 누락값을 임의로 채우지 않았습니다."}
+                            {mDef.id === "차입금" || mDef.id === "차입금의존도" ? "자료 없음" : (metricDisclaimerForDisplay || "필요한 공시 원천 계정을 확인하지 못했습니다. 누락값을 임의로 채우지 않았습니다.")}
                           </div>
                         )}
                         {!Number.isFinite(val) && !serverMetricKey && (
@@ -1593,7 +1593,7 @@ export default function Home() {
                             선택한 실제 {currentCompany.basisCode === "OFS" ? "별도" : "연결"} 공시에서 이 계정의 금액을 이름·계정코드로 확인하지 못했습니다. 다른 기준의 수치나 과거 캐시로 대체하지 않았습니다.
                           </div>
                         )}
-                        {mDef.id === "차입금의존도" && serverMetricEntry?.lines?.find((line) => /리스부채.*포함하지 않았습니다/.test(line)) && <div className="mt-1 text-[10px] font-semibold leading-relaxed text-amber-700">{serverMetricEntry.lines.find((line) => /리스부채.*포함하지 않았습니다/.test(line))}</div>}
+                        {(mDef.id === "차입금" || mDef.id === "차입금의존도") && <div className="mt-1 text-[10px] font-medium text-slate-500">리스 미포함</div>}
                         <button type="button" onClick={() => setExpandedCalculationMetric((current) => current === mId ? null : mId)} className="mt-1 self-start rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100">{expandedCalculationMetric === mId ? "계산식 닫기" : "계산식 살펴보기"}</button>
                         {expandedCalculationMetric === mId && <div className="mt-2 rounded-lg border border-emerald-100 bg-emerald-50/70 p-3 text-xs leading-relaxed"><div className="font-extrabold text-slate-800">계산식</div><div className="mt-1 text-slate-700">{mDef.id === "영업이익률" ? "(영업이익 ÷ 매출액) × 100" : mDef.id === "순이익률" ? "(당기순이익 ÷ 매출액) × 100" : metricFormulaForDisplay}</div>{marginCalculationLines ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{marginCalculationLines.map((line, index) => <div key={`${mId}-calculation-${index}`}>{line}</div>)}</div> : metricLinesForDisplay.length ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{metricLinesForDisplay.map((line, index) => <div key={`${mId}-${index}`}>{line}</div>)}</div> : <div className="mt-2 text-amber-800">공시 원천 계정을 확인하지 못했습니다. 계산에 필요한 계정과 기간을 확인하세요.</div>}{!marginCalculationLines && metricDisclaimerForDisplay && <div className="mt-2 text-amber-800">{metricDisclaimerForDisplay}</div>}</div>}
                       </div>
