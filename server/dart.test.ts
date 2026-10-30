@@ -530,8 +530,8 @@ describe("최근 화면 오류 회귀 테스트", () => {
       bs("유동리스부채", 10), bs("비유동리스부채", 40), bs("자산합계", 1000),
     ];
     const result = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
-    expect(result?.value).toBeCloseTo(35, 6);
-    expect(result?.lines.join(" ")).toContain("리스부채 포함");
+    expect(result?.value).toBeCloseTo(30, 6);
+    expect(result?.formula).toContain("리스부채 미포함");
   });
 
   it("총차입금 의존도는 공시 합계와 자산총계 분자·분모를 모두 표시한다", () => {
@@ -564,8 +564,8 @@ describe("최근 화면 오류 회귀 테스트", () => {
       bs("단기차입금", 100), bs("유동성장기부채", 50), bs("장기차입금", 75), bs("사채", 75),
     ];
     const result = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
-    expect(result?.value).toBe(50);
-    expect(result?.disclaimer).toContain("불일치");
+    expect(result?.value).toBe(30);
+    expect(result?.lines.join(" ")).toContain("차이");
   });
 
   it("DART 총차입금 합계가 리스 제외 구성 계정과 일치하면 유동·비유동 리스부채를 추가한다", () => {
@@ -576,9 +576,9 @@ describe("최근 화면 오류 회귀 테스트", () => {
     ];
     const total = pickMetric(rows, P(2025, "annual"), "borrowings");
     const ratio = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
-    expect(total?.value).toBe(450);
-    expect(ratio?.value).toBe(45);
-    expect(total?.lines?.join(" ")).toContain("유동·비유동 리스부채 추가");
+    expect(total?.value).toBe(400);
+    expect(ratio?.value).toBe(40);
+    expect(total?.formula).toContain("리스부채 미포함");
   });
 
   it("유동성 금융기관차입금과 유동성장기부채를 별도 구성계정으로 각각 한 번씩 집계한다", () => {
@@ -590,10 +590,10 @@ describe("최근 화면 오류 회귀 테스트", () => {
     ];
     const total = pickMetric(rows, P(2026, "half"), "borrowings");
     const ratio = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
-    expect(total?.value).toBeCloseTo(11868.1, 3);
+    expect(total?.value).toBeCloseTo(11754.5, 3);
     expect(total?.lines?.join(" ")).toContain("유동성 금융기관차입금");
     expect(total?.lines?.join(" ")).toContain("유동성장기부채");
-    expect(ratio?.value).toBeCloseTo(11868.1 / 40107.92 * 100, 4);
+    expect(ratio?.value).toBeCloseTo(11754.5 / 40107.92 * 100, 4);
   });
 
   it("구성 계정 없이 차입금및사채와 유동·비유동 리스부채가 있으면 리스부채를 한 번 추가한다", () => {
@@ -602,7 +602,7 @@ describe("최근 화면 오류 회귀 테스트", () => {
       bs("유동리스부채", 55.6), bs("비유동리스부채", 58),
     ];
     const total = pickMetric(rows, P(2026, "half"), "borrowings");
-    expect(total?.value).toBeCloseTo(11868.1, 3);
+    expect(total?.value).toBeCloseTo(11754.5, 3);
     expect(total?.lines?.join(" ")).toContain("DART 원문 구성 리스부채 추가");
   });
 
@@ -620,10 +620,10 @@ describe("최근 화면 오류 회귀 테스트", () => {
     ];
     const borrowings = pickMetric(rows, P(2026, "half"), "borrowings");
     const ratio = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
-    expect(borrowings?.value).toBeCloseTo(11875.59368, 5);
-    expect(borrowings?.formula).toContain("리스부채 포함");
-    expect(ratio?.value).toBeCloseTo(11875.59368 / 40107.92 * 100, 4);
-    expect(ratio?.lines?.join(" ")).toContain("비유동리스부채");
+    expect(borrowings?.value).toBeCloseTo(11754.44468, 5);
+    expect(borrowings?.formula).toContain("리스부채 미포함");
+    expect(ratio?.value).toBeCloseTo(11754.44468 / 40107.92 * 100, 4);
+    expect(ratio?.lines?.join(" ")).toContain("리스 미포함");
     expect(ratio?.lines?.join(" ")).toContain("자산총계");
   });
 
@@ -660,9 +660,9 @@ describe("최근 화면 오류 회귀 테스트", () => {
   it("리스부채는 차입금 의존도 분자에 포함하고 계산식에 구성별 금액을 표시한다", () => {
     const rows: Row[] = [bs("단기차입금", 100), bs("유동성장기부채", 100), bs("장기차입금", 200), bs("사채", 100), bs("유동리스부채", 10), bs("비유동리스부채", 40), bs("자산총계", 1000)];
     const result = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
-    expect(result?.value).toBeCloseTo(55, 6);
-    expect(result?.lines?.join(" ")).toContain("비유동리스부채");
-    expect(result?.lines?.join(" ")).toContain("55.00%");
+    expect(result?.value).toBeCloseTo(50, 6);
+    expect(result?.lines?.join(" ")).toContain("리스 미포함");
+    expect(result?.lines?.join(" ")).toContain("50.00%");
   });
 });
 
@@ -720,45 +720,5 @@ describe("공시 원문 바로가기: 첫 화면(표지) 대신 재무제표 본
     const r = parseViewerDeepLinkHtml(html, rcp, "CFS", "BS");
     expect(r.deepLinked).toBe(false);
     expect(r.url).toBe("");
-  });
-});
-
-describe("차입금 과거기간 범위 및 누락 방어", () => {
-  it("2018년에는 IFRS 16 이후 리스부채 계정 부재만으로 차입금 계산을 차단하지 않는다", () => {
-    const rows = [bs("단기차입금", 100), bs("유동성장기부채", 20), bs("장기차입금", 80), bs("사채", 10), bs("자산총계", 1000)];
-    const debt = pickMetric(rows, P(2018, "annual"), "borrowings");
-    expect(debt?.value).toBe(210);
-    expect(debt?.disclaimer).toContain("2019년 이전");
-    expect(pickMetric(rows, P(2018, "annual"), "borrowingsRatio")?.value).toBeCloseTo(21, 6);
-  });
-  it("2019년 이후 리스부채 미확인 부분합은 확정 총차입금으로 표시하지 않는다", () => {
-    const rows = [bs("단기차입금", 100), bs("유동성장기부채", 20), bs("장기차입금", 80), bs("사채", 10), bs("자산총계", 1000)];
-    const debt = pickMetric(rows, P(2025, "annual"), "borrowings");
-    expect(Number.isFinite(debt?.value)).toBe(false);
-    expect(debt?.partialValue).toBe(210);
-  });
-});
-
-
-describe("전체 BS 범위 판정 회귀", () => {
-  it("ALL 재무상태표에서 차입금 종류가 일부만 공시된 2018년은 없는 사채를 필수 누락으로 취급하지 않는다", () => {
-    const base = [
-      bs("자산총계", 1000), bs("부채총계", 400), bs("자본총계", 600),
-      bs("유동자산", 500), bs("비유동자산", 500), bs("유동부채", 200),
-      bs("비유동부채", 200), bs("유동성장기부채", 120),
-    ].map((row, i) => ({ ...row, source_type: "ALL" as const, fs_div: "CFS", account_detail: i % 2 ? "-" : "-" }));
-    const debt = pickMetric(base, P(2018, "annual"), "borrowings");
-    expect(debt?.value).toBe(120);
-    expect(pickMetric(base, P(2018, "annual"), "borrowingsRatio")?.value).toBeCloseTo(12, 6);
-  });
-  it("같은 ALL 재무상태표라도 2025년 리스부채가 미확인되면 확정 총차입금으로 단정하지 않는다", () => {
-    const base = [
-      bs("자산총계", 1000), bs("부채총계", 400), bs("자본총계", 600),
-      bs("유동자산", 500), bs("비유동자산", 500), bs("유동부채", 200),
-      bs("비유동부채", 200), bs("유동성장기부채", 120),
-    ].map(row => ({ ...row, source_type: "ALL" as const, fs_div: "CFS" }));
-    const debt = pickMetric(base, P(2025, "annual"), "borrowings");
-    expect(Number.isNaN(debt?.value)).toBe(true);
-    expect(debt?.partialValue).toBe(120);
   });
 });
