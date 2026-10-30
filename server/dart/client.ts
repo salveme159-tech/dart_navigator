@@ -558,30 +558,31 @@ function revenueFromOperatingCosts(rows:Row[],period:Period):PickedMetric|null {
   return null;
 }
 
-export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric): PickedMetric | null {
-  if (metric === "netIncome" && period.kind === "q1") {
-    const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
-    const selected = selectAccount(rows, "순이익", period, basis);
-    if (selected) return { value: selected.value, unit: "억원",
-      lines: [`원천 계정: ${selected.row.account_nm}`], formula: null,
-      disclaimer: null, sourceHeading: `손익계산서 > ${selected.row.account_nm}` };
-    // In Q1, the quarter and year-to-date periods coincide. Some filings provide
-    // only thstrm_amount and a non-standard aggregate profit/loss account name.
-    const candidates = rows.filter(row => (row.sj_div === "CIS" || row.sj_div === "IS") &&
-      (!row.fs_div || row.fs_div === basis) &&
-      !/귀속|지배|비지배|세전|법인세차감전|계속영업|중단영업|주당|이익률/.test(normalizeAccountName(row.account_nm)) &&
-      (/^(?:ifrs-full|ifrs)_ProfitLoss$/i.test(row.account_id ?? "") ||
-        /^(?:연결)?(?:당)?(?:제\d+기)?(?:1분기|제1분기|분기|당분기|당기)?(?:순이익|순손익|순손실|순이익\(손실\)|순손익\(손실\))$/.test(normalizeAccountName(row.account_nm))));
-    for (const row of candidates) {
+/** Consolidated profit/loss: select a total, never an attributable, pre-tax or comprehensive-profit row. */
+function pickConsolidatedNetIncome(rows: Row[], period: Period): PickedMetric | null {
+  const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
+  const chosen = selectAccount(rows, "순이익", period, basis);
+  if (chosen) return { value: chosen.value, unit: "억원", lines: [`원천 계정: ${chosen.row.account_nm}`], formula: null, disclaimer: null, sourceHeading: `손익계산서 > ${chosen.row.account_nm}` };
+  const excluded = /귀속|지배기업|비지배|지배주주|비지배주주|소유주|세전|법인세차감전|계속영업|중단영업|포괄|주당|이익률|이익잉여금|기타포괄/;
+  const normalized = (v?: string) => normalizeAccountName(v).replace(/[()（）]/g, "");
+  const candidates = rows.filter(row => (row.sj_div === "CIS" || row.sj_div === "IS") && (!row.fs_div || row.fs_div === basis))
+    .flatMap(row => {
+      const name = normalized(row.account_nm);
+      const id = row.account_id ?? "";
+      if (excluded.test(name) || /ProfitLossAttributable|ProfitLossFromContinuing|ProfitLossBeforeTax|ComprehensiveIncome/i.test(id)) return [];
+      const standard = /^(?:ifrs-full|ifrs)_ProfitLoss$/i.test(id);
+      const nameMatch = /(?:순이익|순손익|순손실)(?:손실)?$/.test(name) && /^(?:당|연결|분기|반기|제\d+기|제\d+분기|총|전체|누적|[0-9])+/.test(name);
+      if (!standard && !nameMatch) return [];
       const value = periodAmount(row, period);
-      if (value !== null && Number.isFinite(value)) return {value, unit:"억원", lines:[`원천 계정: ${row.account_nm}`], formula:null, disclaimer:null, sourceHeading:`손익계산서 > ${row.account_nm}`};
-    }
-  }
-  if (metric === "netIncome" && period.kind === "half") {
-    const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
-    const selected = selectAccount(rows, "순이익", period, basis);
-    if (selected) return { value: selected.value, unit: "억원", lines: [`원천 계정: ${selected.row.account_nm}`], formula: null, disclaimer: null, sourceHeading: `손익계산서 > ${selected.row.account_nm}` };
-  }
+      if (value === null || !Number.isFinite(value)) return [];
+      return [{ row, value, rank: (standard ? 0 : 10) + (row.sj_div === "CIS" ? 0 : 1) }];
+    }).sort((a,b) => a.rank - b.rank);
+  const best = candidates[0];
+  return best ? { value: best.value, unit: "억원", lines: [`원천 계정: ${best.row.account_nm}`], formula: null, disclaimer: null, sourceHeading: `손익계산서 > ${best.row.account_nm}` } : null;
+}
+
+export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric): PickedMetric | null {
+  if (metric === "netIncome") return pickConsolidatedNetIncome(rows, period);
   if (metric === "payables") return pickDirectAccount(rows, period, "매입채무");
   if (metric === "borrowings" || metric === "borrowingsRatio") {
     return pickGrossBorrowingMetric(rows, period, metric);
@@ -624,6 +625,24 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
         !/충당금|손상|대손|비유동/.test(normalizeAccountName(row.account_nm)));
       const available = matches.map(row => ({row, value: periodAmount(row,period)})).filter((entry): entry is {row:Row,value:number} => entry.value !== null && Number.isFinite(entry.value));
       if (available.length === 1) part.result = {...available[0],rank:90};
+    }
+    // Some issuers use custom BS labels. Accept only one unambiguous, current-period
+    // match for each missing component; never infer a zero from a missing account.
+    const extraPatterns: Record<string, RegExp> = {
+      "매출채권": /매출채권|영업채권|TradeAndOther(?:Current)?Receivables|TradeReceivables/i,
+      "재고자산": /재고자산|상품및제품|Inventories/i,
+      "매입채무": /매입채무|영업채무|TradeAndOther(?:Current)?Payables|TradePayables/i,
+    };
+    for (const part of selected) {
+      if (part.result) continue;
+      const candidates = rows.filter(row => row.sj_div === "BS" && (!row.fs_div || row.fs_div === basis) &&
+        extraPatterns[part.name].test(`${normalizeAccountName(row.account_nm)} ${row.account_id ?? ""}`) &&
+        !/비유동|충당금|대손|손상|증감|변동|처분|기초|기말조정|현금흐름/.test(normalizeAccountName(row.account_nm)))
+        .map(row => ({row, value: periodAmount(row,period)}))
+        .filter((entry): entry is {row:Row,value:number} => entry.value !== null && Number.isFinite(entry.value));
+      // Distinct values mean different accounting scopes, so do not guess.
+      const uniqueValues = new Set(candidates.map(c => c.value));
+      if (uniqueValues.size === 1 && candidates.length) part.result = {...candidates[0], rank:95};
     }
     if (selected.some(item => !item.result)) return null;
     const [receivable, inventory, payable] = selected.map(item => item.result!);
