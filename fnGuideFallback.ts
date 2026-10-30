@@ -11,7 +11,7 @@ type ExternalFinancialValue = {
 };
 
 type Cell = { html: string; text: string };
-type TableRow = { cells: Cell[]; context: string; unit: string; basis: "CFS" | "OFS" | "UNKNOWN"; granularity: "annual" | "quarter"; flowMode: "cum" | "qtr"; dates: Array<{ year: number; month: number; index: number; estimated: boolean }> };
+type TableRow = { cells: Cell[]; context: string; unit: string; basis: "CFS" | "OFS" | "UNKNOWN"; granularity: "annual" | "quarter"; dates: Array<{ year: number; month: number; index: number; estimated: boolean }> };
 
 const normalize = (s: string) => decodeEntities(s.replace(/<[^>]*>/g, " ")).replace(/[\s·ㆍ\u00a0]/g, "").replace(/[※*]/g, "").trim();
 function decodeEntities(s: string): string {
@@ -64,11 +64,7 @@ function parseTables(html: string): TableRow[] {
     }
     if (!dateHeaders.length) continue;
     const granularity: "annual" | "quarter" = dateHeaders.some((date) => [3, 6, 9].includes(date.month)) ? "quarter" : "annual";
-    const periodMarkers=[...`${context} ${tableHtml.slice(0,500)}`.matchAll(/id=["'][^"']*(?:Sonik|Cash|Daecha)([YQ])["']|Annual|Quarter|연간|누적|분기/gi)];
-    const lastMarker=periodMarkers.at(-1)?.[0]??"";
-    const annualWithInterim=dateHeaders.filter(date=>date.month===12).length>=2 && dateHeaders.filter(date=>date.month!==12).length<=1;
-    const flowMode: "cum" | "qtr" = /Annual|연간|누적|(?:Sonik|Cash|Daecha)Y/i.test(lastMarker) || (!/Quarter|분기|(?:Sonik|Cash|Daecha)Q/i.test(lastMarker) && annualWithInterim) ? "cum" : "qtr";
-    for (const cells of rawRows) output.push({ cells, context: nearby, unit, basis, granularity, flowMode, dates: dateHeaders });
+    for (const cells of rawRows) output.push({ cells, context: nearby, unit, basis, granularity, dates: dateHeaders });
   }
   return output;
 }
@@ -80,7 +76,7 @@ function toEok(value: number, unit: string): number {
 }
 function metricLabels(metric: FinancialMetric): RegExp[] {
   const map: Partial<Record<FinancialMetric, RegExp[]>> = {
-    revenue: [/^(?:매출액|매출액\(수익\)|매출액\(영업수익\)|수익\(매출액\)|영업수익(?:\(매출액\))?|총영업수익|영업수익합계)$/],
+    revenue: [/^(?:매출액|매출액\(수익\)|수익\(매출액\)|영업수익)$/],
     operatingProfit: [/^영업이익(?:\(손실\))?$/],
     netIncome: [/^(?:당기순이익(?:\(손실\))?|당기순손익|순이익)$/],
     borrowings: [/^(?:총차입금|차입금|이자부부채)$/],
@@ -124,24 +120,21 @@ function observationValue(rows: TableRow[], metric: FinancialMetric, period: Per
     // 연간 누계와 단독 분기 값을 섞지 않도록 표의 기간 열 구성을 기준으로 구분합니다.
     const wantedGranularity: "annual" | "quarter" = period.kind === "annual" ? "annual" : "quarter";
     if (row.granularity !== wantedGranularity) continue;
-    const subtractPrior=flow && row.flowMode==="cum" && period.mode==="qtr" && (period.kind==="half" || period.kind==="q3");
-    const months=subtractPrior?[target-3,target]:flow&&row.flowMode==="cum"?[target]:targetMonths;
     const valuesByMonth = new Map<number, number>();
     for (const date of row.dates) {
-      if (date.year !== period.year || date.estimated || !months.includes(date.month)) continue;
+      if (date.year !== period.year || date.estimated || !targetMonths.includes(date.month)) continue;
       const value = parseNumber(row.cells[date.index]?.text ?? "");
       if (value !== null) valuesByMonth.set(date.month, metricNeedsEokConversion(metric) ? toEok(value, row.unit) : value);
     }
-    if (months.length > 1) {
-      if (months.every((month) => valuesByMonth.has(month))) {
-        const value=subtractPrior?valuesByMonth.get(target)!-valuesByMonth.get(target-3)!:months.reduce((sum,month)=>sum+valuesByMonth.get(month)!,0);
-        candidates.push({ value, rawLabel: row.cells[0]?.text ?? label, unit: metricOutputUnit(metric), basis: row.basis, month: target, estimated: false, dates: months });
+    if (targetMonths.length > 1) {
+      if (targetMonths.every((month) => valuesByMonth.has(month))) {
+        candidates.push({ value: targetMonths.reduce((sum, month) => sum + valuesByMonth.get(month)!, 0), rawLabel: row.cells[0]?.text ?? label, unit: metricOutputUnit(metric), basis: row.basis, month: target, estimated: false, dates: targetMonths });
       }
     } else if (valuesByMonth.has(target)) {
       candidates.push({ value: valuesByMonth.get(target)!, rawLabel: row.cells[0]?.text ?? label, unit: metricOutputUnit(metric), basis: row.basis, month: target, estimated: false, dates: [target] });
     }
   }
-  const unique = [...new Map(candidates.map((x) => [`${x.value.toFixed(6)}:${x.month}:${x.rawLabel}`, x])).values()];
+  const unique = [...new Map(candidates.map((x) => [`${x.value}:${x.month}:${x.rawLabel}:${x.dates.join(",")}`, x])).values()];
   if (unique.length !== 1) return null;
   const selected = unique[0];
   return { value: selected.value, unit: selected.unit, source: "FNGUIDE", url: "", basis: selected.basis, period: `${period.year}/${String(target).padStart(2, "0")}`, rawLabel: selected.rawLabel };
@@ -170,7 +163,7 @@ export async function fetchFnGuideFallback(args: { stockCode: string; period: Pe
   if (!/^\d{6}$/.test(stock)) return null;
   const financeUrl = `https://comp.fnguide.com/SVO2/ASP/SVD_Finance.asp?pGB=1&gicode=A${stock}&cID=&MenuYn=Y&ReportGB=&NewMenuID=103&stkGb=701`;
   const mainUrl = `https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp?pGB=1&gicode=A${stock}&cID=&MenuYn=Y&ReportGB=&NewMenuID=101&stkGb=701`;
-  const urls = args.metric === "ebitda" ? [mainUrl, financeUrl] : args.metric === "revenue" ? [financeUrl, mainUrl] : [financeUrl];
+  const urls = args.metric === "ebitda" ? [mainUrl, financeUrl] : [financeUrl];
   for (const url of urls) {
     const html = await fetchHtml(url).catch(() => "");
     if (!html) continue;

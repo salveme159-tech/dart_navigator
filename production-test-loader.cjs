@@ -1,7 +1,7 @@
 // Test-only TypeScript loader. Production modules execute; only external providers/env are isolated.
 const fs=require('node:fs'),path=require('node:path');
 const ts=require(process.env.TS_COMPILER_PATH || 'typescript');
-module.exports=function createLoader(root,overrides={}){
+module.exports=function createLoader(root){
  const unavailable=async()=>null;
  const stubs={
   '@trpc/server':{TRPCError:class extends Error{constructor(o){super(o.message);this.code=o.code;}}},
@@ -9,8 +9,7 @@ module.exports=function createLoader(root,overrides={}){
   apiBase:{apiBaseUrl:'',apiUrl:route=>route},
   crossValidation:{crossValidateMetric:async()=>({providers:[],status:'UNAVAILABLE'}),crossValidateMetrics:async()=>({}),clearCrossValidationCache:()=>{},fetchNaverDebtFallback:unavailable},
   fnGuideFallback:{fetchFnGuideFallback:unavailable,fetchFnGuideLeaseLiabilities:unavailable},
-  disclosureNotes:{parseDepreciationFromDisclosure:()=>null,parseLeaseLiabilitiesFromDisclosure:()=>null,parseBorrowingTotalFromDisclosure:()=>null,parseRevenueFromDisclosure:()=>null},
-  ...overrides,
+  disclosureNotes:{parseDepreciationFromDisclosure:()=>null,parseLeaseLiabilitiesFromDisclosure:()=>null},
  };
  const cache=new Map();
  function load(file){
