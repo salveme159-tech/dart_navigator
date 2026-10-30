@@ -29,3 +29,15 @@ test('trade-and-other receivable/payable working capital',()=>{
 test('missing payable cannot be treated as zero',()=>{
  assert.equal(pickMetric([bs('매출채권',120),bs('재고자산',80)],half,'workingCapital'),null);
 });
+test('net income uses a consolidated total from a nonstandard quarterly row',()=>{
+ const row={...base,reprt_code:'11013',sj_div:'CIS',account_nm:'연결총분기순손익',account_id:'-표준계정코드 미사용-',thstrm_amount:String(46e8)};
+ assert.equal(pickMetric([row],q1,'netIncome')?.value,46);
+});
+test('net income never substitutes owners attributable profit',()=>{
+ const row={...base,reprt_code:'11013',sj_div:'CIS',account_nm:'지배기업소유주귀속분기순이익',account_id:'ifrs-full_ProfitLossAttributableToOwnersOfParent',thstrm_amount:String(46e8)};
+ assert.equal(pickMetric([row],q1,'netIncome'),null);
+});
+test('half-year net income cannot use a three-month value without cumulative proof',()=>{
+ const row={...base,sj_div:'CIS',account_nm:'연결총반기순손익',account_id:'-표준계정코드 미사용-',thstrm_amount:String(46e8)};
+ assert.equal(pickMetric([row],half,'netIncome'),null);
+});
