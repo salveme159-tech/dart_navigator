@@ -48,5 +48,38 @@ test('종목 현황과 비교분석은 유동자산·원천계정·차입금·�
  const turnover=await c.compareDart({companies:['검증전선'],metric:'assetTurnover',year,period:'half',basis:'CFS',includeValidation:false},key);assert.equal(turnover.rows[0].value,1000/1500);assert.equal(turnover.rows[0].unit,'회');
 });
 test('본문의 기타금융부채로 누락된 차입금은 같은 원문 주석의 합계와 리스로 보완',async()=>{const {client:c}=fresh(true);const calls=network({notes:true});const snapshot=await c.snapshotDart('검증전선',false,key,false,'CFS');assert.equal(snapshot.metrics.borrowings.value,350);assert.ok(Math.abs(snapshot.metrics.borrowingsRatio.value-350/1500*100)<1e-9);const comparison=await c.compareDart({companies:['검증전선'],metric:'borrowings',year,period:'half',basis:'CFS',includeValidation:false},key);assert.equal(comparison.rows[0].value,350);assert.ok(calls()>=1);});
-test('다른 연결·별도 주석으로 빈 차입금을 보정하지 않음',async()=>{const {client:c}=fresh(true);network({notes:true,noteScope:'별도'});const result=await c.compareDart({companies:['검증전선'],metric:'borrowings',year,period:'half',basis:'CFS',includeValidation:false},key);assert.equal(result.rows[0].found,false);assert.equal(result.rows[0].value,null);});
+test('다른 연결·별도 주석으로 빈 차입금을 보정하지 않음',async()=>{const {client:c}=fresh(true);network({notes:true,noteScope:'별도'});const result=await c.compareDart({companies:['검증전선'],metric:'borrowings',year,period:'half',basis:'CFS',includeValidation:false},key);
+ // 별도 주석의 합계(350)를 연결 값으로 가져오지 않습니다. 대신 연결 재무상태표에서 확인된 차입금 계정 합계(300)만 쓰고, 리스부채를 포함하지 못했다는 안내를 남깁니다.
+ assert.equal(result.rows[0].value,300);assert.notEqual(result.rows[0].value,350);});
 test('비교분석의 네 공시 기간과 연결·별도에서 원천계정 조회, 하반기 요청은 거절',async()=>{const {client:c}=fresh();network();for(const basis of ['CFS','OFS'])for(const period of ['q1','half','q3','annual']){const result=await c.compareDart({companies:['검증전선'],metric:'currentAssets',year,period,basis,includeValidation:false},key);assert.equal(result.rows[0].value,500);assert.match(result.rows[0].basis,basis==='CFS'?/연결/:/별도/);}await assert.rejects(c.compareDart({companies:['검증전선'],metric:'revenue',period:'h2',year,basis:'CFS'},key),/1분기·상반기·3분기·연간/);});
+
+test('대한전선 실제 계정코드 사례(NoncurrentPortionOfOtherNoncurrentBorrowings·유동성회사채·리스부채)에서 누락 없이 4,805.6억원 합산 및 중복 방지',()=>{
+ const {client:c,engine:e}=fresh();
+ const taihanRows=[
+  row('자산총계',15000,{account_id:'ifrs-full_Assets',source_type:'ALL'}),
+  row('부채총계',7000,{account_id:'ifrs-full_Liabilities',source_type:'ALL'}),
+  row('자본총계',8000,{account_id:'ifrs-full_Equity',source_type:'ALL'}),
+  row('유동자산',8000,{account_id:'ifrs-full_CurrentAssets',source_type:'ALL'}),
+  row('유동부채',4000,{account_id:'ifrs-full_CurrentLiabilities',source_type:'ALL'}),
+  {sj_div:'BS',account_nm:'단기차입금',account_id:'-표준계정코드 미사용-',thstrm_amount:'358286350000',source_type:'ALL'},
+  {sj_div:'BS',account_nm:'유동성장기차입금',account_id:'-표준계정코드 미사용-',thstrm_amount:'21190778000',source_type:'ALL'},
+  {sj_div:'BS',account_nm:'유동성회사채',account_id:'ifrs-full_CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued',thstrm_amount:'0',source_type:'ALL'},
+  {sj_div:'BS',account_nm:'유동성리스부채',account_id:'ifrs-full_CurrentLeaseLiabilities',thstrm_amount:'3728922000',source_type:'ALL'},
+  {sj_div:'BS',account_nm:'비유동 리스부채',account_id:'ifrs-full_NoncurrentLeaseLiabilities',thstrm_amount:'3284456000',source_type:'ALL'},
+  {sj_div:'BS',account_nm:'회사채',account_id:'ifrs-full_NoncurrentPortionOfNoncurrentBondsIssued',thstrm_amount:'89795929000',source_type:'ALL'},
+  {sj_div:'BS',account_nm:'장기차입금',account_id:'ifrs-full_NoncurrentPortionOfOtherNoncurrentBorrowings',thstrm_amount:'4273817000',source_type:'ALL'},
+ ];
+ const picked=c.pickMetric(taihanRows,e.P(year,'half'),'borrowings');
+ assert.ok(picked && Number.isFinite(picked.value),'총차입금이 NaN이 아니어야 함');
+ const expected=(358286350000+21190778000+0+3728922000+3284456000+89795929000+4273817000)/1e8;
+ assert.ok(Math.abs(picked.value-expected)<1e-6,`기대값 ${expected}억원이지만 실제 ${picked.value}억원`);
+ assert.equal(Number(picked.value.toFixed(1)),4805.6);
+
+ // 유동성장기부채 합계 계정(유동성장기차입금+유동성회사채 포함)과 하위 계정이 함께 있을 때 중복 합산하지 않는지 검증
+ const withAggregate=[
+  ...taihanRows.map(r=>r.account_nm==='유동성회사채'?{...r,thstrm_amount:'10000000000'}:r),
+  {sj_div:'BS',account_nm:'유동성장기부채',account_id:'dart_CurrentPortionOfLongTermBorrowings',thstrm_amount:'31190778000',source_type:'ALL'},
+ ];
+ const pickedAgg=c.pickMetric(withAggregate,e.P(year,'half'),'borrowings');
+ assert.ok(pickedAgg && Math.abs(pickedAgg.value-(expected+100))<1e-6,'유동성장기부채 합계와 유동성회사채가 중복 합산되지 않아야 함');
+});
