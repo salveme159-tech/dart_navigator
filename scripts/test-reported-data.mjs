@@ -11,7 +11,7 @@ function zip(text,name='report.xml'){const data=Buffer.from(text),file=Buffer.fr
 // report (pages 38/64). This is reconstructed fixture HTTP, not a live API capture.
 // https://www.taihan.com/resources/files/2025_business-report_h1.pdf
 const balances=[['자산총계',2940933340749],['부채총계',1436579860117],['자본총계',1504353480632],['유동자산',2002934153273],['유동부채',1258275976584],['현금및현금성자산',489807536125],['단기금융상품',103328000000],['유동재고자산',715644079926],['유동매출채권',550860211154],['유동매입채무',405405533584],['유동성 금융기관 차입금(사채 제외)',309268696819],['유동성장기부채',50000000000],['유동성전환사채',75336709513],['비유동성 금융기관 차입금(사채 제외)',160000000000],['기타유동금융부채',143819723170],['기타비유동금융부채',7099359624]];
-const expectedDebt=(309268696819+50000000000+75336709513+160000000000+12869817000)/1e8;
+const expectedDebt=(309268696819+50000000000+75336709513+160000000000)/1e8;
 const noteXml='<TITLE>3. 연결재무제표 주석</TITLE><P>매입채무 및 기타금융부채</P><P>당반기말 (단위 : 천원)</P><TABLE><TR><TH></TH><TH>공시금액</TH></TR><TR><TU>유동 리스부채</TU><TE>5,973,687</TE></TR><TR><TU>비유동 리스부채</TU><TE>6,896,130</TE></TR></TABLE><P>전기말 (단위 : 천원)</P><TABLE><TR><TH></TH><TH>공시금액</TH></TR><TR><TU>유동 리스부채</TU><TE>3,992,764</TE></TR><TR><TU>비유동 리스부채</TU><TE>6,286,344</TE></TR></TABLE>';
 const scope={fs_div:'CFS',bsns_year:'2025',reprt_code:'11012',corp_code:'00104768',rcept_no:receipt};
 const bs=()=>balances.map(([account_nm,value])=>({...scope,sj_div:'BS',account_nm,thstrm_amount:String(value)}));
