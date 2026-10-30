@@ -578,7 +578,29 @@ function pickConsolidatedNetIncome(rows: Row[], period: Period): PickedMetric | 
       return [{ row, value, rank: (standard ? 0 : 10) + (row.sj_div === "CIS" ? 0 : 1) }];
     }).sort((a,b) => a.rank - b.rank);
   const best = candidates[0];
-  return best ? { value: best.value, unit: "억원", lines: [`원천 계정: ${best.row.account_nm}`], formula: null, disclaimer: null, sourceHeading: `손익계산서 > ${best.row.account_nm}` } : null;
+  if (best) return { value: best.value, unit: "억원", lines: [`원천 계정: ${best.row.account_nm}`], formula: null, disclaimer: null, sourceHeading: `손익계산서 > ${best.row.account_nm}` };
+
+  // If a consolidated total is not separately tagged, owners' and non-controlling
+  // interests' shares together represent consolidated profit/loss. Never use only
+  // one share or mix periods, receipts, statement sections or accounting bases.
+  if (basis === "CFS") {
+    for (const section of ["CIS", "IS"]) {
+      const scoped = rows.filter(row => row.sj_div === section && (!row.fs_div || row.fs_div === basis));
+      const owners = scoped.filter(row => /^(?:ifrs-full|ifrs)_ProfitLossAttributableToOwnersOfParent$/i.test(row.account_id ?? "") ||
+        (/(?:지배기업|지배주주|지배기업의소유주|지배기업소유주)/.test(normalized(row.account_nm)) && /순이익|순손익|순손실/.test(normalized(row.account_nm))));
+      const minorities = scoped.filter(row => /^(?:ifrs-full|ifrs)_ProfitLossAttributableToNoncontrollingInterests$/i.test(row.account_id ?? "") ||
+        (/(?:비지배지분|비지배주주|비지배기업소유주)/.test(normalized(row.account_nm)) && /순이익|순손익|순손실/.test(normalized(row.account_nm))));
+      for (const owner of owners) for (const minority of minorities) {
+        if (!sameAccountScope(owner, minority)) continue;
+        const ov = periodAmount(owner, period), mv = periodAmount(minority, period);
+        if (ov === null || mv === null || !Number.isFinite(ov) || !Number.isFinite(mv)) continue;
+        return { value: ov + mv, unit: "억원", lines: [`원천 계정: ${owner.account_nm} ${won(ov)}`, `원천 계정: ${minority.account_nm} ${won(mv)}`],
+          formula: "연결 순이익 = 지배기업 소유주 귀속 순이익 + 비지배지분 귀속 순이익", disclaimer: null,
+          sourceHeading: "연결 손익계산서 > 귀속 순이익 합계" };
+      }
+    }
+  }
+  return null;
 }
 
 export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric): PickedMetric | null {
