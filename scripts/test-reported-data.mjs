@@ -72,3 +72,29 @@ test('다양한 기업형 BS: 미발행 사채, 단기만, 장기만, 혼합, �
   assert.equal(result?.value,sample.expected,sample.name);
  }
 });
+
+test('연결 1분기 순이익: 분기연결순손익 변형을 인식하고 지배주주 귀속액을 배제',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[
+  {sj_div:'CIS',fs_div:'CFS',account_nm:'분기연결순손익',account_id:'-표준계정코드 미사용-',thstrm_amount:String(43.2e8)},
+  {sj_div:'CIS',fs_div:'CFS',account_nm:'지배기업소유주귀속분기순이익',thstrm_amount:String(41e8)},
+  {sj_div:'CIS',fs_div:'OFS',account_nm:'당기순이익',thstrm_amount:String(30e8)},
+ ];
+ assert.equal(c.pickMetric(rows,e.P(2025,'q1'),'netIncome')?.value,43.2);
+});
+
+test('운전자본: 연결 계정코드로 매출채권·재고·매입채무 선택, 다른 기준 및 리스 제외',()=>{
+ const {client:c,engine:e}=fresh();
+ const base={sj_div:'BS',fs_div:'CFS',source_type:'ALL',thstrm_amount:'0'};
+ const rows=[
+  {...base,account_nm:'유동매출채권및기타채권',account_id:'ifrs-full_TradeAndOtherCurrentReceivables',thstrm_amount:String(500e8)},
+  {...base,account_nm:'재고자산',account_id:'ifrs-full_Inventories',thstrm_amount:String(300e8)},
+  {...base,account_nm:'유동매입채무및기타채무',account_id:'ifrs-full_TradeAndOtherCurrentPayables',thstrm_amount:String(200e8)},
+  {...base,fs_div:'OFS',account_nm:'매입채무',thstrm_amount:String(900e8)},
+  {...base,account_nm:'리스부채',thstrm_amount:String(80e8)},
+ ];
+ const value=c.pickMetric(rows,e.P(2025,'q1'),'workingCapital');
+ assert.equal(value?.value,600);
+ assert.match(value.formula,/유동매입채무및기타채무/);
+ assert.equal(c.pickMetric(rows.filter(r=>r.account_nm!=='유동매입채무및기타채무'),e.P(2025,'q1'),'workingCapital'),null);
+});
