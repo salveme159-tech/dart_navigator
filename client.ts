@@ -5,7 +5,7 @@ import { ENV } from "../_core/env";
 import { extractInitialViewerArgs, parseViewerDeepLinkHtml } from "./viewerLink";
 import { crossValidateMetric, crossValidateMetrics, clearCrossValidationCache, fetchNaverDebtFallback, type MetricCrossValidation } from "./crossValidation";
 import { fetchFnGuideFallback, fetchFnGuideLeaseLiabilities } from "./fnGuideFallback";
-import { parseBorrowingTotalFromDisclosure, parseDepreciationFromDisclosure, parseLeaseLiabilitiesFromDisclosure, parseRevenueFromDisclosure } from "./disclosureNotes";
+import { parseDepreciationFromDisclosure, parseLeaseLiabilitiesFromDisclosure } from "./disclosureNotes";
 import {
   DEFAULT_COMPANY,
   METRIC_LABELS,
@@ -244,7 +244,7 @@ async function statements(code: string, year: number, reprt: string, fs: "CFS" |
     if (!response.ok) throw new TRPCError({code:"BAD_GATEWAY",message:`DART 재무제표 조회 실패: HTTP ${response.status}`});
     const json=await response.json() as {status:string;message?:string;list?:Row[]};
     if (!["000","013"].includes(json.status)) throw new TRPCError({code:"BAD_GATEWAY",message:`DART ${json.status}: ${json.message ?? "조회 실패"}`});
-    const primary=(json.list ?? []).filter(row=>(!row.bsns_year || String(row.bsns_year)===String(year)) && (!row.reprt_code || row.reprt_code===reprt) && (!row.fs_div || row.fs_div===fs)).map(row => ({...row, source_type:"ALL" as const}));
+    const primary=(json.list ?? []).filter(row=>(!row.bsns_year || String(row.bsns_year)===String(year)) && (!row.reprt_code || row.reprt_code===reprt) && (!row.fs_div || row.fs_div===fs));
     const receipt=primary.find(row=>/^\d{14}$/.test(row.rcept_no ?? ""))?.rcept_no ?? filing?.rceptNo;
     const recovered=await recoverStatementRows(primary,{year,report:reprt,basis:fs,receipt,corpCode:code},async()=>{
       const response=await dartFetch(`${BASE}/fnlttSinglAcnt.json?${params}`,{},5_000);
@@ -262,8 +262,7 @@ async function statements(code: string, year: number, reprt: string, fs: "CFS" |
 
 function normAccount(s: string) { return s.replace(/[\s·ㆍ]/g, ""); }
 
-import { ACCOUNT_SPECS as DIRECT_ACCOUNT_SPECS, normalizeAccountName, periodAmount, pairedIncome, sameAccountScope, selectAccount } from "../../shared/financialAccounts.ts";
-import { COMPARISON_ACCOUNT_METRICS, isExtraComparisonMetric, type ExtraComparisonMetric } from "../../shared/comparisonMetrics.ts";
+import { ACCOUNT_SPECS as DIRECT_ACCOUNT_SPECS, periodAmount, pairedIncome, sameAccountScope, selectAccount } from "../../shared/financialAccounts.ts";
 
 export function pickDirectAccount(rows: Row[], period: Period, term: string) {
   const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
@@ -340,14 +339,6 @@ function pickRawAccountMetrics(rows: Row[], period: Period, rceptNo: string) {
 
 type GrossBorrowingComponent = { group: string; account: string; value: number; row: Row };
 
-function leaseBucket(row: Row): "current" | "noncurrent" | "total" | null {
-  const name = normalizeAccountName(row.account_nm);
-  const id = (row.account_id ?? "").replace(/^(?:ifrs-full|dart)_/i, "");
-  if (/^(?:NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent)$/i.test(id) || /비유동.*리스|리스.*비유동|장기리스/.test(name)) return "noncurrent";
-  if (/^(?:CurrentLeaseLiabilities|LeaseLiabilitiesCurrent)$/i.test(id) || /유동.*리스|리스.*유동|단기리스/.test(name)) return "current";
-  return /^(?:LeaseLiabilities)$/i.test(id) || /^(?:리스부채|리스부채합계|리스부채총계)$/.test(name) ? "total" : null;
-}
-
 /**
  * 총차입금/차입금의존도용 차입성 부채 집계.
  * 순차입금(netDebt)의 기존 정책(리스부채 제외)은 이 함수에 영향을 받지 않습니다.
@@ -355,12 +346,12 @@ function leaseBucket(row: Row): "current" | "noncurrent" | "total" | null {
  */
 function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent[]; coreFound: number; coreComplete: boolean; fullBalanceSheet: boolean; total: number; missing: string[]; combinedRow: Row | null } {
   const bsRows = rows.filter((row) => row.sj_div === "BS");
-  const normalize = normalizeAccountName;
+  const normalize = (value?: string) => (value ?? "").replace(/[\s·ㆍ]/g, "");
   const excluded = /사채할인발행차금|차입금할인발행차금|미상각할인차금|할인발행차금|상환할증금|사채발행비|총차입금|차입금총계|차입금합계|총차입부채|차입금및사채|차입금및회사채|차입금과사채/;
   const groups: Array<{ group: string; aliases: string[]; ids: RegExp[]; lease?: boolean; preferAggregate?: string[]; preferSingle?: string[] }> = [
     { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings/i], preferSingle: ["단기차입금", "단기차입부채"] },
     { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
-    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
+    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채"] },
     { group: "사채", aliases: ["사채", "회사채", "비유동사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^ifrs-full_BondsIssued$|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i], preferSingle: ["사채", "회사채"] },
     { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
     { group: "비유동리스부채", aliases: ["비유동리스부채", "장기리스부채", "비유동리스부채합계"], ids: [/NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent/i], lease: true, preferSingle: ["비유동리스부채", "장기리스부채"] },
@@ -370,18 +361,13 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
     const id = row.account_id ?? "";
     if (!account && !spec.ids.some((pattern) => pattern.test(id))) return [];
     if (!spec.lease && account.includes("리스")) return [];
-    if (!spec.lease && leaseBucket(row)) return [];
-    const currentBankBorrowing = /^유동성금융기관차입금/.test(account);
-    if (spec.group === "단기차입금" && ((/유동성|유동.*장기/.test(account) && !currentBankBorrowing) || /Noncurrent|Longterm|CurrentPortion|CurrentMaturities|BorrowingsNoncurrent/i.test(id))) return [];
-    if (spec.group === "유동리스부채" && leaseBucket(row) !== "current") return [];
-    if (spec.group === "비유동리스부채" && leaseBucket(row) !== "noncurrent") return [];
     if (excluded.test(account)) return [];
     if (spec.group === "사채" && account.startsWith("유동성")) return [];
     if (spec.group === "장기차입금" && (account.startsWith("유동성") || /CurrentPortion/i.test(id))) return [];
     if (spec.lease && !/리스/i.test(account) && !spec.ids.some((pattern) => pattern.test(id))) return [];
     const aliasIndex = spec.aliases.findIndex((alias) => account === alias || account.startsWith(alias));
     const idMatch = spec.ids.some((pattern) => pattern.test(id));
-    if (aliasIndex < 0 && !idMatch && !spec.lease) return [];
+    if (aliasIndex < 0 && !idMatch) return [];
     const raw = (row.thstrm_amount ?? "").replace(/,/g, "").trim();
     const value = /^[-—–－−]$/.test(raw) ? 0 : amountOf(row);
     if (value === null || !Number.isFinite(value)) return [];
@@ -395,13 +381,7 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
     if (spec.preferAggregate?.length) {
       for (const alias of spec.preferAggregate) {
         const found = candidates.filter((item) => item.account === alias || item.account.startsWith(alias)).sort((a, b) => a.accountLength - b.accountLength)[0];
-        if (found) {
-          // A loan's current portion does not include separately disclosed convertible bonds.
-          if (spec.group === "유동성장기부채" && !/사채/.test(found.account)) {
-            return [found, ...candidates.filter(item => item.row !== found.row && /사채/.test(item.account))];
-          }
-          return [found];
-        }
+        if (found) return [found];
       }
     }
     // 이름이 같은 계정코드 변형이 여러 개 있으면 하나만 고르되, 상이한 세부 계정은 함께 합산합니다.
@@ -448,93 +428,108 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
     usedRows.add(item.row);
     return true;
   });
-  const nativeBalance = bsRows.filter(row => row.source_type !== "MAJOR");
-  const basis = nativeBalance.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
-  const totals = ["자산총계", "부채총계", "자본총계"].map(label => selectAccount(nativeBalance, label, undefined, basis));
-  const fullBalanceSheet = totals.every(Boolean) && nativeBalance.length >= 6 && nativeBalance.every(row => sameAccountScope(nativeBalance[0], row));
+  const normalizeTotals = (value?: string) => normalize(value);
+  const hasTotal = (names: string[]) => bsRows.some((row) => names.includes(normalizeTotals(row.account_nm)) && amountOf(row) !== null);
+  const fullBalanceSheet = hasTotal(["자산총계", "총자산"]) && hasTotal(["부채총계", "총부채"]) && hasTotal(["자본총계", "총자본", "자본과부채총계"]) && bsRows.length >= 6;
   const coreFound = selectedCore.filter((item) => item.selected.length > 0).length;
-  // Not every company issues bonds or has a current portion of long-term debt.
-  // Only a complete ALL balance sheet without unresolved borrowing rows can
-  // establish the scope of the reported components; sparse/major-account data cannot.
-  const unmatchedBorrowing = bsRows.some(row => {
-    const name = normalize(row.account_nm);
-    if ((!/차입|사채|대출금/.test(name) && !/Borrowings|Bonds|Debenture|LoansAndBorrowings/i.test(row.account_id ?? "")) || /할인발행|발행비|상환할증|총차입금|차입금총계|차입금합계|차입금및사채|차입금및회사채|차입금과사채/.test(name)) return false;
-    return !coreItems.some(item => item.row === row) && !selectedCore.some(({spec}) => candidatesFor(spec).some(item => item.row === row));
-  });
-  // Other financial liabilities include trade payables/derivatives and must not
-  // invalidate the separately disclosed loan/bond accounts or be added wholesale.
-  // Leases are independently verified in the body or the same report's notes.
-  const reportedScopeComplete = fullBalanceSheet && coreFound > 0 && !unmatchedBorrowing;
   // '차입금및사채'처럼 차입금과 사채를 한 줄로 묶어 공시하는 계정(구성 계정이 따로 없을 때만 합계로 사용).
   const combinedRow = bsRows.find((row) => /^(?:차입금및사채|차입금및회사채|차입금과사채|차입금및사채합계)$/.test(normalize(row.account_nm)) && (() => { const v = amountOf(row); return v !== null && Number.isFinite(v); })()) ?? null;
   return {
-    items, coreFound, coreComplete: selectedCore.every((item) => item.selected.length > 0) || reportedScopeComplete, fullBalanceSheet,
+    items, coreFound, coreComplete: selectedCore.every((item) => item.selected.length > 0), fullBalanceSheet,
     total: items.reduce((sum, item) => sum + item.value, 0),
-    missing: reportedScopeComplete ? [] : selectedCore.filter((item) => item.selected.length === 0).map((item) => item.spec.group),
+    missing: selectedCore.filter((item) => item.selected.length === 0).map((item) => item.spec.group),
     combinedRow,
   };
 }
 
-/**
- * 차입금 지표 정책: 리스부채는 총차입금과 차입금의존도의 분자에서 제외.
- * 합계 계정의 리스 포함 여부가 불명확하면 검증된 비리스 구성 계정만 사용한다.
- */
 function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowings" | "borrowingsRatio"): PickedMetric | null {
+  const bsRows = rows.filter((row) => row.sj_div === "BS");
+  const normalize = (value?: string) => (value ?? "").replace(/[\s·ㆍ]/g, "");
+  const aggregateNames = new Set(["총차입금", "차입금총계", "차입금합계", "총차입부채", "총이자부부채", "이자부부채합계", "차입금및사채", "차입금및회사채", "차입금과사채"]);
+  const aggregateRow = bsRows.find((row) => aggregateNames.has(normalize(row.account_nm)) && !normalize(row.account_nm).includes("리스"));
+  const aggregateValue = aggregateRow ? amountOf(aggregateRow) : null;
   const components = grossBorrowingComponents(rows);
-  const nonLeaseItems = components.items.filter((item) =>
-    !/리스/.test(item.group) && !/리스/.test(normalizeAccountName(item.account)) && leaseBucket(item.row) === null
-  );
-  const nonLeaseTotal = nonLeaseItems.reduce((sum, item) => sum + item.value, 0);
-  const unit = metric === "borrowingsRatio" ? "%" : "억원";
-  const formula = metric === "borrowingsRatio"
-    ? "차입금 의존도 = 차입금·사채 합계(리스부채 미포함) ÷ 자산총계 × 100"
-    : "차입금 = 단기차입금 + 유동성장기부채 + 장기차입금 + 사채 (리스부채 미포함)";
-  const lines = nonLeaseItems.map((item) => `구성 · ${item.account}: ${won(item.value)}`);
-  const sourceHeading = "재무상태표 > 차입금·사채 구성 계정 (리스부채 미포함)";
-  const missing = components.missing.filter((group) => !/리스/.test(group));
+  let totalBorrowings = Number.NaN;
+  let lines: string[] = [];
+  let formula = "총차입금 = 공시된 차입성 부채 계정 합계(유동·비유동 리스부채 포함)";
+  let disclaimer: string | null = null;
+  let sourceHeading = "재무상태표 > 차입금 구성 계정";
 
-  // 존재하지 않는 차입금 종류를 강제하지 않지만, 미분류 계정이 있는 불완전한 표를 확정하지 않는다.
-  if (!nonLeaseItems.length || !components.coreComplete || !Number.isFinite(nonLeaseTotal)) {
+  if (aggregateRow && aggregateValue !== null && Number.isFinite(aggregateValue) && aggregateValue >= 0) {
+    // DART의 총차입금 합계가 리스부채를 제외하는지, 이미 포함하는지 구성 계정과 대조해 판별합니다.
+    const leaseItems = components.items.filter((item) => /리스/.test(item.group) || /리스부채/.test(item.account));
+    const coreItems = components.items.filter((item) => !leaseItems.includes(item));
+    const coreTotal = coreItems.reduce((sum, item) => sum + item.value, 0);
+    const leaseTotal = leaseItems.reduce((sum, item) => sum + item.value, 0);
+    // 합계와 구성 계정의 차이 허용치는 반올림 수준으로 제한합니다. 1% 허용치는
+    // 1조 원대 차입금에서 리스부채 규모까지 오차로 흡수해 리스를 중복 가산할 수 있습니다.
+    const tolerance = Math.max(0.5, Math.abs(aggregateValue) * 0.0001);
+    const matchesCoreOnly = components.coreFound > 0 && Math.abs(coreTotal - aggregateValue) <= tolerance;
+    const matchesLeaseIncluded = leaseItems.length > 0 && Math.abs(components.total - aggregateValue) <= tolerance;
+    const combinedBorrowingAndBonds = /^(?:차입금및사채|차입금및회사채|차입금과사채)$/.test(normalize(aggregateRow.account_nm));
+    // 별도 구성 계정이 없고 원천 계정명이 '차입금및사채'인 경우, 그 이름은 차입성 부채·사채를 뜻하므로
+    // 별도 항목인 리스부채는 한 번 추가합니다. 총차입금 합계와 구성 계정이 있을 때는 아래 대조 규칙이 우선합니다.
+    const addLeaseToCombinedLine = combinedBorrowingAndBonds && components.coreFound === 0 && leaseTotal > 0 && !matchesLeaseIncluded;
+    totalBorrowings = (matchesCoreOnly && leaseTotal > 0) || addLeaseToCombinedLine ? aggregateValue + leaseTotal : aggregateValue;
+    lines = [`분자 · DART 공시 합계 계정 ${aggregateRow.account_nm}: ${won(aggregateValue)}`];
+    sourceHeading = `재무상태표 > ${aggregateRow.account_nm}`;
+    if (addLeaseToCombinedLine) {
+      lines.push(`DART 원문 구성 리스부채 추가: ${won(leaseTotal)}`, `리스 포함 총차입금: ${won(totalBorrowings)}`);
+      sourceHeading = `재무상태표 > ${aggregateRow.account_nm} + 리스부채 구성 계정`;
+    } else if (matchesCoreOnly && leaseTotal > 0) {
+      lines.push(...coreItems.map((item) => `구성 · ${item.account}: ${won(item.value)}`));
+      lines.push(`DART 구성 계정에서 확인한 유동·비유동 리스부채 추가: ${won(leaseTotal)}`, `리스 포함 총차입금: ${won(totalBorrowings)}`);
+      sourceHeading = `재무상태표 > ${aggregateRow.account_nm} + 리스부채 구성 계정`;
+    } else if (matchesLeaseIncluded) {
+      lines.push(`구성 계정 합계(리스부채 포함): ${won(components.total)}`, `차이: ${won(Math.abs(components.total - aggregateValue))}`);
+    } else if (components.coreFound > 0) {
+      lines.push(...components.items.map((item) => `구성 · ${item.account}: ${won(item.value)}`));
+      if (combinedBorrowingAndBonds) lines.push(`참고 · '${aggregateRow.account_nm}' 행은 구성 계정과의 중복 합산을 방지하기 위해 별도로 더하지 않았습니다.`);
+      lines.push(`구성 계정 합계(현재 확인 범위): ${won(components.total)}`, `차이: ${won(Math.abs(components.total - aggregateValue))}`);
+      if (Math.abs(components.total - aggregateValue) > tolerance) disclaimer = "공시 합계와 구성 계정의 금액이 불일치합니다. 주석에서 리스부채 포함 여부를 확인해야 합니다.";
+    } else if (combinedBorrowingAndBonds) {
+      disclaimer = `구성 계정이 없어 '${aggregateRow.account_nm}' 합계 행을 사용했습니다. 리스부채는 별도 확인이 필요합니다.`;
+    }
+  } else if (components.coreFound > 0) {
+    lines = components.items.map((item) => `구성 · ${item.account}: ${won(item.value)}`);
+    const missing = [...components.missing];
+    for (const lease of ["유동리스부채","비유동리스부채"]) if(!components.items.some(item=>item.group===lease)) missing.push(lease);
+    if(missing.length) return {value:Number.NaN,partialValue:components.total,missingComponents:missing,unit:metric === "borrowingsRatio" ? "%" : "억원",lines:[...lines,`확인된 차입금 부분합: ${won(components.total)}`],formula,disclaimer:`총차입금을 확정하지 않았습니다. 미확인 구성 항목: ${missing.join(", ")}. 확인된 부분합 ${won(components.total)}을 총액 또는 비율로 사용하지 않습니다.`,sourceHeading};
+    totalBorrowings = components.total;
+    lines.push(`분자 · 차입성 부채 합계(리스부채 포함): ${won(totalBorrowings)}`);
+    if (components.combinedRow) lines.push(`참고 · '${components.combinedRow.account_nm}' 행은 구성 계정과의 중복 합산을 막기 위해 제외`);
+    sourceHeading = "재무상태표 > 차입금·사채·리스부채 구성 계정";
+  } else if (components.combinedRow) {
+    const combined = amountOf(components.combinedRow) as number;
+    totalBorrowings = combined;
+    lines = [`분자 · 공시 계정 ${components.combinedRow.account_nm}: ${won(combined)}`];
+    disclaimer = `별도 구성 계정이 없어 '${components.combinedRow.account_nm}' 행 전체를 총차입금으로 사용했습니다. 리스부채는 포함되지 않았을 수 있습니다.`;
+    sourceHeading = `재무상태표 > ${components.combinedRow.account_nm}`;
+  } else {
+    const missing = components.missing.join(", ") || "차입금 구성 계정";
     return {
-      value: Number.NaN, partialValue: nonLeaseItems.length ? nonLeaseTotal : undefined,
-      missingComponents: missing, unit, lines: [...lines, "리스부채는 계산에서 제외합니다."], formula,
-      disclaimer: `비리스 차입금·사채 구성 계정의 완전성을 확인하지 못했습니다. 확인된 부분합 ${won(nonLeaseTotal)}은 확정 차입금이 아닙니다. 리스부채 미포함.`,
+      value: Number.NaN, unit: metric === "borrowingsRatio" ? "%" : "억원",
+      lines: ["재무상태표에서 차입금·사채 계정을 찾지 못했습니다.", `누락 계정: ${missing}`],
+      formula: metric === "borrowingsRatio" ? "차입금의존도 = 총차입금 ÷ 자산총계 × 100" : formula,
+      disclaimer: `재무상태표에서 차입금 관련 계정이 확인되지 않아(누락: ${missing}) 계산하지 않았습니다. 임의로 0원 처리하지 않았습니다.`,
       sourceHeading,
     };
   }
 
-  lines.push(`차입금·사채 합계(리스부채 미포함): ${won(nonLeaseTotal)}`);
-  if (metric === "borrowings") return { value: nonLeaseTotal, unit, lines, formula, disclaimer: "리스부채 미포함", sourceHeading };
-  const assetsResult = resolveBalanceTotal(rows, period, "자산총계");
-  const assets = assetsResult?.value ?? null;
-  if (assets === null || !Number.isFinite(assets) || assets <= 0) {
-    return { value: Number.NaN, unit, lines, formula, disclaimer: "자산총계를 확인하지 못했습니다. 리스부채 미포함.", sourceHeading };
+  if (metric === "borrowings") return { value: totalBorrowings, unit: "억원", lines, formula, disclaimer, sourceHeading };
+  const resolvedAssets = resolveBalanceTotal(rows, period, "자산총계");
+  const assets = resolvedAssets?.value ?? null;
+  if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0 || !Number.isFinite(totalBorrowings)) {
+    return { value: Number.NaN, unit: "%", lines: [...lines, "분모 · 자산총계 확인 실패"], formula: "차입금의존도 = 총차입성 부채(리스 포함) ÷ 자산총계 × 100", disclaimer: "자산총계 행과 부채총계+자본총계 대체 산식을 모두 확인하지 못해 차입금 의존도를 계산하지 않았습니다.", sourceHeading };
   }
-  const ratio = nonLeaseTotal / assets * 100;
-  return {
-    value: ratio, unit,
-    lines: [...lines, ...(assetsResult?.lines ?? []), `차입금 의존도: ${won(nonLeaseTotal)} ÷ ${won(assets)} × 100 = ${ratio.toFixed(2)}% (리스부채 미포함)`],
-    formula, disclaimer: "리스부채 미포함", sourceHeading: `${sourceHeading}·자산총계`,
-  };
+  const ratio = totalBorrowings / assets * 100;
+  lines.push(...resolvedAssets.lines, `분모 · 자산총계${resolvedAssets.derived ? "(부채총계 + 자본총계로 계산)" : ""}: ${won(assets)}`, `계산 · 총차입성 부채(리스 포함) ${won(totalBorrowings)} ÷ ${won(assets)} × 100 = ${ratio.toFixed(2)}%`);
+  return { value: ratio, unit: "%", lines, formula: "차입금의존도 = (차입금 + 사채 + 유동·비유동 리스부채) ÷ 자산총계 × 100", disclaimer, sourceHeading: `${sourceHeading}·자산총계` };
 }
 
 type PickedMetric = { partialValue?: number; missingComponents?: string[]; value: number; unit: string; lines: string[]; formula: string | null; disclaimer: string | null; sourceHeading: string };
 
-function revenueFromOperatingCosts(rows:Row[],period:Period):PickedMetric|null {
-  for (const section of ["CIS","IS"]) {
-    const group=rows.filter(row=>row.sj_div===section);
-    const profit=findRowLike(group,[section],metricConfig.operatingProfit.names,period);
-    const expense=group.find(row => (/^(?:영업비용|영업비용합계|총영업비용)$/.test(normalizeAccountName(row.account_nm)) || /^ifrs-full_OperatingExpenses$/i.test(row.account_id??"")) && periodAmount(row,period)!==null);
-    if (!profit || !expense || !sameAccountScope(profit,expense)) continue;
-    const p=periodAmount(profit,period),e=periodAmount(expense,period);
-    if (p===null || e===null || e<0 || p+e<0) continue;
-    return {value:p+e,unit:"억원",formula:"영업수익(매출액) = 동일 손익계산서의 영업이익 + 영업비용",lines:[`영업이익 ${won(p)}`,`공시 영업비용 합계 ${won(e)}`,`영업수익 ${won(p+e)}`],disclaimer:null,sourceHeading:"손익계산서 > 영업수익(영업이익 + 영업비용)"};
-  }
-  return null;
-}
-
 export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric): PickedMetric | null {
-  if (metric === "payables") return pickDirectAccount(rows, period, "매입채무");
   if (metric === "borrowings" || metric === "borrowingsRatio") {
     return pickGrossBorrowingMetric(rows, period, metric);
   }
@@ -572,6 +567,13 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
       disclaimer: "기업별 계정 분류에 따라 구성 계정이 달라질 수 있으며, 본 화면은 프로젝트에 정의된 운전자본 공식을 적용합니다.",
       sourceHeading: "재무상태표 > 매출채권·재고자산·매입채무",
     };
+  }
+
+  if (metric === "payables") {
+    const row = findRowLike(rows, ["BS"], ["매입채무", "매입채무및기타채무", "유동매입채무"]);
+    const value = row ? amountOf(row) : null;
+    if (value === null || !row) return null;
+    return { value, unit: "억원", lines: [`원천 계정: ${row.account_nm} ${won(value)}`], formula: null, disclaimer: null, sourceHeading: `재무상태표 > ${row.account_nm}` };
   }
 
   if (metric === "capex") {
@@ -771,13 +773,13 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
   }
 
   const directLabels:Partial<Record<FinancialMetric,string>>={revenue:"매출액",operatingProfit:"영업이익",netIncome:"순이익",operatingCashFlow:"영업현금흐름",investmentCashFlow:"투자활동현금흐름",financingCashFlow:"재무활동현금흐름"};
-  if(directLabels[metric])return pickDirectAccount(rows,period,directLabels[metric]!) ?? (metric==="revenue" ? revenueFromOperatingCosts(rows,period) : null);
+  if(directLabels[metric])return pickDirectAccount(rows,period,directLabels[metric]!);
   const config = metricConfig[metric];
   const row = metric === "revenue"
-    ? findRevenueRow(rows, config.sj, period)
+    ? findRevenueRow(rows, config.sj)
     : metric === "netIncome"
       ? (findRowLike(rows, ["CIS", "IS"], ["반기순손익", "분기순손익", "당기순이익", "당기순이익(손실)", "연결당기순이익"]) ?? findRowLike(rows, config.sj, config.names))
-      : findRowLike(rows, config.sj, config.names, period);
+      : findRowLike(rows, config.sj, config.names);
   const isFlowStatement = config.sj.some((statement) => ["IS", "CIS", "CF"].includes(statement));
   const value = row ? periodAmount(row, period) : null;
   if (!row || value === null) return null;
@@ -799,32 +801,31 @@ async function withDartLeaseFallback(args: {
   const { corp, rows, period, basis, metric, rceptNo, requestKey } = args;
   const picked = args.picked;
   const stockCode = /^\d{6}$/.test(corp.stock ?? "") ? corp.stock! : null;
-  const isLeaseRow = (row: Row) => row.sj_div === "BS" && leaseBucket(row) !== null;
+  const isLeaseRow = (row: Row) => row.sj_div === "BS" && (/리스부채|리스료부채/.test(row.account_nm ?? "") || /CurrentLeaseLiabilities|NoncurrentLeaseLiabilities|LeaseLiabilitiesCurrent|LeaseLiabilitiesNoncurrent/i.test(row.account_id ?? ""));
   const leaseRows = rows.filter(isLeaseRow);
   const hasLeaseRow = leaseRows.length > 0;
   const hasCurrentLeaseRow = leaseRows.some((row) => {
     const label = (row.account_nm ?? "").replace(/\s/g, "");
-    return leaseBucket(row) === "current";
+    return (/유동/.test(label) && !/비유동/.test(label)) || /CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i.test(row.account_id ?? "");
   });
-  const hasNoncurrentLeaseRow = leaseRows.some((row) => leaseBucket(row) === "noncurrent");
+  const hasNoncurrentLeaseRow = leaseRows.some((row) => /비유동|장기/.test((row.account_nm ?? "").replace(/\s/g, "")) || /NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent/i.test(row.account_id ?? ""));
   const leaseRowHasUsableAmount = (row: Row) => amountOf(row) !== null;
   const hasCurrentLeaseValue = leaseRows.some((row) => {
     const label = (row.account_nm ?? "").replace(/\s/g, "");
-    const current = leaseBucket(row) === "current";
+    const current = ((/유동/.test(label) && !/비유동/.test(label)) || /CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i.test(row.account_id ?? ""));
     return current && leaseRowHasUsableAmount(row);
   });
   const hasNoncurrentLeaseValue = leaseRows.some((row) => {
-    const noncurrent = leaseBucket(row) === "noncurrent";
+    const noncurrent = /비유동|장기/.test((row.account_nm ?? "").replace(/\s/g, "")) || /NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent/i.test(row.account_id ?? "");
     return noncurrent && leaseRowHasUsableAmount(row);
   });
   const hasCompleteLeaseRows = hasCurrentLeaseRow && hasNoncurrentLeaseRow;
   const hasCompleteLeaseValues = hasCompleteLeaseRows && hasCurrentLeaseValue && hasNoncurrentLeaseValue;
   const components = grossBorrowingComponents(rows);
-  const bodyLeaseTotal = components.items.find(item => item.group === "리스부채");
   const pickedAlreadyIncludesLease = (value: PickedMetric | null) => Boolean(value?.lines.some((line) => /리스부채 포함|리스 포함 총차입금|유동·비유동 리스부채 추가|리스부채 추가/.test(line)));
   // 본문에 유동·비유동 리스부채 금액이 모두 있고, 계산 결과에도 이미 반영된 경우만 조기 반환합니다.
   // 총계행만 사용해 리스가 빠진 경우에는 계속 진행해 구성 계정·주석과 대조합니다.
-  if ((hasCompleteLeaseValues || bodyLeaseTotal) && picked && Number.isFinite(picked.value) && pickedAlreadyIncludesLease(picked)) return { picked, url: null };
+  if (hasCompleteLeaseValues && picked && Number.isFinite(picked.value) && pickedAlreadyIncludesLease(picked)) return { picked, url: null };
 
   let naverDebtPromise: Promise<Awaited<ReturnType<typeof fetchNaverDebtFallback>> | null> | null = null;
   let naverDebt: Awaited<ReturnType<typeof fetchNaverDebtFallback>> | null | undefined;
@@ -879,7 +880,6 @@ async function withDartLeaseFallback(args: {
   let leaseCurrent: number | null = null;
   let leaseNoncurrent: number | null = null;
   let leaseTotal: number | null = null;
-  let noteBorrowing: ReturnType<typeof parseBorrowingTotalFromDisclosure> = null;
   let leaseSource = "DART 원문 주석";
   let leaseUrl: string | null = /^\d{14}$/.test(rceptNo) ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rceptNo}` : null;
 
@@ -893,13 +893,8 @@ async function withDartLeaseFallback(args: {
     leaseTotal = leaseCurrent + leaseNoncurrent;
     leaseSource = "DART 재무상태표 본문";
     leaseUrl = null;
-  } else if (bodyLeaseTotal) {
-    leaseTotal = bodyLeaseTotal.value;
-    leaseSource = "DART 재무상태표 본문";
-    leaseUrl = null;
   } else {
     const entries = /^\d{14}$/.test(rceptNo) ? await disclosureEntries(rceptNo, requestKey).catch(() => []) : [];
-    noteBorrowing = parseBorrowingTotalFromDisclosure(entries, period, basis);
     const dartLease = parseLeaseLiabilitiesFromDisclosure(entries, period, basis);
     if (dartLease) {
       leaseCurrent = dartLease.current;
@@ -935,7 +930,7 @@ async function withDartLeaseFallback(args: {
   if (leaseTotal === null || !Number.isFinite(leaseTotal) || leaseTotal < 0) return externalTotalFallback(leaseUrl);
 
   const hasCoreAggregate = rows.some(row=>row.sj_div === "BS" && /^(총차입금|차입금총계|차입금합계|총차입부채|총이자부부채|이자부부채합계|차입금및사채|차입금및회사채|차입금과사채)$/.test((row.account_nm ?? "").replace(/\s/g,"")) && amountOf(row)!==null);
-  if(!components.coreComplete && !hasCoreAggregate && !noteBorrowing) return externalTotalFallback(leaseUrl);
+  if(!components.coreComplete && !hasCoreAggregate) return externalTotalFallback(leaseUrl);
   const normalize = (value?: string) => (value ?? "").replace(/[\s·ㆍ]/g, "");
   const aggregateNames = new Set(["총차입금", "차입금총계", "차입금합계", "총차입부채", "총이자부부채", "이자부부채합계", "차입금및사채", "차입금및회사채", "차입금과사채"]);
   const aggregateRow = rows.find((row) => row.sj_div === "BS" && aggregateNames.has(normalize(row.account_nm)));
@@ -950,11 +945,7 @@ async function withDartLeaseFallback(args: {
   let reconciliationMessage = "";
 
   if (metric === "borrowings" && hasCompleteLeaseValues && picked && Number.isFinite(picked.value) && pickedAlreadyIncludesLease(picked)) return { picked, url: leaseUrl };
-  if (noteBorrowing) {
-    baseDebt = noteBorrowing.value;
-    addLease = !noteBorrowing.includesLease;
-    reconciliationMessage = `DART 원문 ${noteBorrowing.sourceFile}의 '${noteBorrowing.label}' 합계 계정을 사용했습니다.`;
-  } else if (aggregateRow && aggregateValue !== null && Number.isFinite(aggregateValue)) {
+  if (aggregateRow && aggregateValue !== null && Number.isFinite(aggregateValue)) {
     if (near(aggregateValue, coreTotal)) {
       baseDebt = aggregateValue;
       addLease = true;
@@ -1130,23 +1121,11 @@ async function pickMetricWithOriginalFallback(args: {
   let url: string | null = null;
   const rceptNo = rows.find((row) => row.rcept_no)?.rcept_no ?? "";
 
-  if (metric === "revenue" && (!picked || !Number.isFinite(picked.value)) && /^\d{14}$/.test(rceptNo)) {
-    const entries=await disclosureEntries(rceptNo,requestKey).catch(()=>[]);
-    const revenue=parseRevenueFromDisclosure(entries,period,basis);
-    if (revenue) picked={value:revenue.value,unit:"억원",formula:null,lines:[`DART 원문 계정: ${revenue.label}`,`공시 파일: ${revenue.sourceFile}`,`동일 보고기간 영업수익 ${won(revenue.value)}`],disclaimer:null,sourceHeading:`DART 원문 손익계산서 > ${revenue.label}`};
+  if (metric === "borrowings" || metric === "borrowingsRatio") {
+    const corrected = await withDartLeaseFallback({ corp, rows, period, basis, metric, picked, rceptNo, requestKey });
+    picked = corrected.picked ?? picked;
+    url = corrected.url;
   }
-
-  if ((metric === "operatingMargin" || metric === "netMargin") && (!picked || !Number.isFinite(picked.value)) && !pickDirectAccount(rows,period,"매출액")) {
-    const revenue=await pickMetricWithOriginalFallback({...args,metric:"revenue"});
-    const profit=pickMetric(rows,period,metric==="operatingMargin"?"operatingProfit":"netIncome");
-    if (revenue.picked && Number.isFinite(revenue.picked.value) && revenue.picked.value!==0 && profit && Number.isFinite(profit.value)) {
-      const name=metric==="operatingMargin"?"영업이익":"순이익";
-      picked={value:profit.value/revenue.picked.value*100,unit:"%",formula:`${name}률 = ${name} ÷ 영업수익(매출액) × 100`,lines:[...profit.lines,...revenue.picked.lines],disclaimer:null,sourceHeading:"같은 공시 손익계산서 > 이익·영업수익"};
-    }
-  }
-
-  // 리스부채 미포함 정책: 원문/네이버/FnGuide 리스 보정 경로를 호출하지 않습니다.
-  // 두 화면 모두 pickMetric()의 동일한 비리스 차입금 계산 결과를 사용합니다.
 
   if (metric === "ebitda" && (!picked || !Number.isFinite(picked.value))) {
     const operatingProfit = pickMetric(rows, period, "operatingProfit");
@@ -1569,10 +1548,14 @@ export async function snapshotDart(companyName: string, force = false, requestKe
   }
   // DART 본문에 리스부채가 없으면 실제 접수번호의 원문 주석에서 먼저 금액을 찾고, 네이버 금융을 그다음 보조 경로로 사용합니다.
   let leaseFallbackUrl: string | null = null;
-  for (const metric of ["revenue", "operatingMargin", "netMargin", "borrowings", "borrowingsRatio"] as const) {
+  for (const metric of ["borrowings", "borrowingsRatio"] as const) {
     const existing = metrics[metric];
-    const corrected = await pickMetricWithOriginalFallback({corp, rows, period, basis:fs, metric, requestKey});
-    if ((metric === "borrowings" || metric === "borrowingsRatio") && corrected.url) leaseFallbackUrl = corrected.url;
+    const originalPicked = pickMetric(rows, period, metric);
+    const pickedForCorrection: PickedMetric | null = existing
+      ? { value: existing.value ?? Number.NaN, unit: existing.unit, lines: existing.lines ?? [], formula: existing.formula, disclaimer: existing.disclaimer ?? null, sourceHeading: "재무상태표 > 차입금 구성 계정" }
+      : originalPicked;
+    const corrected = await withDartLeaseFallback({ corp: { name: corp.name, code: corp.code, stock: corp.stock }, rows, period, basis: fs, metric, picked: pickedForCorrection, rceptNo: rcept, requestKey });
+    if (corrected.url) leaseFallbackUrl = corrected.url;
     if (corrected.picked && Number.isFinite(corrected.picked.value)) {
       metrics[metric] = { ...(existing ?? { value: null, unit: corrected.picked.unit, formula: corrected.picked.formula, citation: citation(periodLabel(period), corrected.picked.sourceHeading, rcept), available: false }), value: corrected.picked.value, unit: corrected.picked.unit, formula: corrected.picked.formula, lines: corrected.picked.lines, disclaimer: corrected.picked.disclaimer, citation: pickedCitation(period,corrected.picked,rows,corrected.url), available: true };
     } else if (existing && corrected.picked?.disclaimer) {
@@ -1640,34 +1623,17 @@ export async function snapshotDart(companyName: string, force = false, requestKe
   };
 }
 
-export type ComparisonMetric = FinancialMetric | ExtraComparisonMetric;
-
-function comparisonMetricLabel(metric: ComparisonMetric): string {
-  if (metric === "assetTurnover") return "자산회전율";
-  return isExtraComparisonMetric(metric) ? COMPARISON_ACCOUNT_METRICS[metric] : METRIC_LABELS[metric];
-}
-
-function pickExtraComparisonMetric(rows: Row[], period: Period, metric: ExtraComparisonMetric): PickedMetric | null {
-  if (metric !== "assetTurnover") return pickDirectAccount(rows, period, COMPARISON_ACCOUNT_METRICS[metric]);
-  const revenue = pickMetric(rows, period, "revenue");
-  const assets = resolveBalanceTotal(rows, period, "자산총계");
-  if (!revenue || !assets || !Number.isFinite(revenue.value) || assets.value <= 0) return null;
-  return {value:revenue.value / assets.value, unit:"회", formula:"자산회전율 = 같은 공시의 매출액 ÷ 자산총계", lines:[...revenue.lines, ...assets.lines], disclaimer:null, sourceHeading:"손익계산서 매출액 · 재무상태표 자산총계"};
-}
-
 export type CompareInput = {
   companies: string[];
-  metric: ComparisonMetric;
+  metric: FinancialMetric;
   year?: number;
-  period: Kind | "latest";
+  period: Kind | "latest" | "h2";
   basis: "CFS" | "OFS";
   force?: boolean;
   includeValidation?: boolean;
 };
 
 export async function compareDart(input: CompareInput, requestKey?: string) {
-  const metric = input.metric;
-  if ((input.period as string) === "h2") throw new TRPCError({code:"BAD_REQUEST", message:"비교분석은 1분기·상반기·3분기·연간 보고서만 지원합니다."});
   const map = await corps(Boolean(input.force), requestKey);
   if (new Set(input.companies).size > 10) throw new TRPCError({code:"BAD_REQUEST", message:"비교 기업은 최대 10개까지 가능합니다."});
   const uniqueNames = [...new Set(input.companies)];
@@ -1693,17 +1659,41 @@ export async function compareDart(input: CompareInput, requestKey?: string) {
       resultRows.push({ company: requested, found: false, value: null, unit: "", period: "", basis: fsLabel(input.basis), message: "DART 기업목록에서 찾지 못했습니다." });
       continue;
     }
-    if (isExtraComparisonMetric(metric)) {
-      const candidates = input.period === "latest" ? await latestPublishedPeriods(corp.code, requestKey, Boolean(input.force)) : periodFromFilters(input.year, input.period);
-      const resolved = await resolvePeriod(corp, candidates, input.basis, Boolean(input.force), requestKey);
-      if (!resolved) {
-        resultRows.push({company:corp.name, found:false, value:null, unit:"", period:"", basis:fsLabel(input.basis), message:"선택한 기간·회계기준의 재무제표를 확인하지 못했습니다."});
+    if (input.period === "h2") {
+      const year = input.year ?? new Date().getFullYear() - 1;
+      const pointInTimeMetrics = new Set<FinancialMetric>(["netDebt", "borrowings", "borrowingsRatio", "workingCapital", "payables", "debtRatio", "currentRatio"]);
+      if (pointInTimeMetrics.has(input.metric)) {
+        const annualResolved = await resolvePeriod(corp, [P(year, "annual", "cum")], input.basis, Boolean(input.force), requestKey);
+        if (!annualResolved) {
+          resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${year}년 하반기 말`, basis: fsLabel(input.basis), message: "연간 사업보고서의 기말 잔액을 확인할 수 없습니다." });
+          continue;
+        }
+        const rcept = annualResolved.rows.find((r) => r.rcept_no)?.rcept_no ?? "";
+        const selected = await pickMetricWithOriginalFallback({ corp, rows: annualResolved.rows, period: annualResolved.period, basis: annualResolved.fs, metric: input.metric, requestKey });
+        const picked = selected.picked;
+        if (!picked || !Number.isFinite(picked.value)) {
+          const fallback = await externalFallbackForMetric({ name: corp.name, stock: corp.stock }, input.metric, annualResolved.period, annualResolved.fs);
+          if (fallback) {
+            resultRows.push({ company: corp.name, found: true, value: fallback.value, unit: fallback.unit, period: `${year}년 하반기 말(외부 재무자료)`, basis: fsLabel(annualResolved.fs), citation: `${fallback.source} (${fallback.url})`, message: "DART 원천 계정이 없어 외부 출처 값을 보조 표시합니다.", crossValidation: fallback.validation, source: fallback.source === "FnGuide" ? "FNGUIDE" : "NAVER_FINANCE" });
+          } else resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${year}년 하반기 말(사업보고서 기말)`, basis: fsLabel(annualResolved.fs), rceptNo: rcept || undefined, message: `${METRIC_LABELS[input.metric]} 기말 잔액의 원천 계정을 확인할 수 없습니다.` });
+          continue;
+        }
+        resultRows.push({ company: corp.name, found: true, value: picked.value, unit: picked.unit, period: `${year}년 하반기 말(사업보고서 기말)`, basis: fsLabel(annualResolved.fs), rceptNo: rcept || undefined, citation: citation(`${year}년 사업보고서`, picked.sourceHeading, rcept), formula: picked.formula, validationPeriod: annualResolved.period, source: "DART" });
         continue;
       }
-      const receipt = resolved.rows.find(row => row.rcept_no)?.rcept_no ?? "";
-      const picked = pickExtraComparisonMetric(resolved.rows, resolved.period, metric);
-      const available = Boolean(picked && Number.isFinite(picked.value));
-      resultRows.push({company:corp.name, found:available, value:available ? picked!.value : null, unit:picked?.unit ?? (metric === "assetTurnover" ? "회" : "억원"), period:`${periodLabel(resolved.period)} · ${modeLabel(resolved.period)}`, basis:fsLabel(resolved.fs), rceptNo:receipt || undefined, citation:citation(periodLabel(resolved.period), picked?.sourceHeading ?? comparisonMetricLabel(metric), receipt), formula:picked?.formula, source:"DART", ...(available ? {} : {message:`같은 공시에서 ${comparisonMetricLabel(metric)}의 원천 계정을 확인하지 못했습니다.`})});
+      const pair = await halfYearPair(corp, year, input.basis, requestKey);
+      if (!pair) {
+        resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${year}년 하반기`, basis: fsLabel(input.basis), message: "같은 회계 기준의 연간·상반기 공시가 모두 없어 하반기를 계산하지 않았습니다." });
+        continue;
+      }
+      const picked = secondHalfPicked(pair, input.metric);
+      const annualRcept = pair.annualRows.find((r) => r.rcept_no)?.rcept_no ?? "";
+      const halfRcept = pair.halfRows.find((r) => r.rcept_no)?.rcept_no ?? "";
+      if (!picked || !Number.isFinite(picked.value)) {
+        resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${year}년 하반기(연간−상반기)`, basis: fsLabel(pair.fs), rceptNo: annualRcept || undefined, message: picked?.disclaimer ?? `${METRIC_LABELS[input.metric]}은 하반기 차감에 필요한 흐름 지표/원천 계정이 부족합니다.` });
+        continue;
+      }
+      resultRows.push({ company: corp.name, found: true, value: picked.value, unit: picked.unit, period: `${year}년 하반기(연간−상반기)`, basis: fsLabel(pair.fs), rceptNo: annualRcept || undefined, citation: `연간 접수번호 ${annualRcept || "미확인"}; 상반기 접수번호 ${halfRcept || "미확인"}`, formula: picked.formula });
       continue;
     }
     const resolved = await resolvePeriod(corp, (input.period === "latest" ? await latestPublishedPeriods(corp.code,requestKey,Boolean(input.force)) : periodFromFilters(input.year, input.period)), input.basis, Boolean(input.force), requestKey);
@@ -1712,12 +1702,12 @@ export async function compareDart(input: CompareInput, requestKey?: string) {
       continue;
     }
     const rcept = resolved.rows.find((r) => r.rcept_no)?.rcept_no ?? "";
-    const selected = await pickMetricWithOriginalFallback({ corp, rows: resolved.rows, period: resolved.period, basis: resolved.fs, metric: metric, requestKey });
+    const selected = await pickMetricWithOriginalFallback({ corp, rows: resolved.rows, period: resolved.period, basis: resolved.fs, metric: input.metric, requestKey });
     const picked = selected.picked;
     if (!picked || !Number.isFinite(picked.value)) {
-      const fallback = await externalFallbackForMetric({ name: corp.name, stock: corp.stock }, metric, resolved.period, resolved.fs);
+      const fallback = await externalFallbackForMetric({ name: corp.name, stock: corp.stock }, input.metric, resolved.period, resolved.fs);
       if (fallback) resultRows.push({ company: corp.name, found: true, value: fallback.value, unit: fallback.unit, period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)} · 네이버 금융`, basis: fsLabel(resolved.fs), citation: `${fallback.source} (${fallback.url})`, message: "DART 원천 계정이 없어 외부 출처 값을 보조 표시합니다.", crossValidation: fallback.validation, source: fallback.source === "FnGuide" ? "FNGUIDE" : "NAVER_FINANCE" });
-      else resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)}`, basis: fsLabel(resolved.fs), rceptNo: rcept || undefined, message: picked?.disclaimer ?? missingMetricReason(resolved.rows,metric) });
+      else resultRows.push({ company: corp.name, found: false, value: null, unit: "", period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)}`, basis: fsLabel(resolved.fs), rceptNo: rcept || undefined, message: picked?.disclaimer ?? missingMetricReason(resolved.rows,input.metric) });
       continue;
     }
     const finalPicked = picked;
@@ -1740,27 +1730,27 @@ export async function compareDart(input: CompareInput, requestKey?: string) {
   // 비교표의 각 값에 동일 기간 네이버 금융 수치와 출처 정보를 연결합니다. 하반기(연간-상반기) 파생값은
   // 외부 출처의 개별 분기 데이터로 동일 구간을 재구성할 수 없으면 검증 불가로 표시합니다.
   const validationMap = await mapWithConcurrency(resultRows, 3, async (row) => {
-    if (input.includeValidation === false || isExtraComparisonMetric(metric)) return row;
+    if (input.includeValidation === false) return row;
     if (!row.found || row.value === null || !Number.isFinite(row.value) || row.source === "NAVER_FINANCE" || row.source === "FNGUIDE") return row;
     const corp = findCorp(row.company, map);
     const rowBasis: "CFS" | "OFS" = /별도/.test(row.basis) ? "OFS" : input.basis;
     if (!corp) return row;
     if (!row.validationPeriod) {
       const sourceUnavailable: MetricCrossValidation = {
-        metric: metric, metricLabel: METRIC_LABELS[metric], status: "NOT_COMPARABLE", dartValue: row.value, unit: row.unit,
+        metric: input.metric, metricLabel: METRIC_LABELS[input.metric], status: "NOT_COMPARABLE", dartValue: row.value, unit: row.unit,
         period: row.period, basis: rowBasis, tolerancePct: 1.25, checkedAt: new Date().toISOString(), providers: [],
         message: "이 값은 사업보고서 누계 − 상반기 누계로 파생한 하반기 값입니다. 네이버 금융에서 같은 6개월 구간을 독립적으로 맞출 수 없어 수치 비교는 보류했습니다.",
       };
       return { ...row, crossValidation: sourceUnavailable };
     }
-    const crossValidation = await crossValidateMetric({ company: { name: corp.name, stock: corp.stock }, metric: metric, dartValue: row.value, unit: row.unit, period: row.validationPeriod, basis: rowBasis });
+    const crossValidation = await crossValidateMetric({ company: { name: corp.name, stock: corp.stock }, metric: input.metric, dartValue: row.value, unit: row.unit, period: row.validationPeriod, basis: rowBasis });
     // 비교분석의 표시값은 언제나 표준 DART 엔진의 산출값으로 유지합니다. 네이버 값은 출처 근거에만 붙입니다.
     return { ...row, crossValidation };
   });
 
   return {
-    metric: metric,
-    metricLabel: comparisonMetricLabel(metric),
+    metric: input.metric,
+    metricLabel: METRIC_LABELS[input.metric],
     rows: validationMap.map(({ validationPeriod: _validationPeriod, ...row }) => row),
     refreshedAt: new Date().toISOString(),
   };
