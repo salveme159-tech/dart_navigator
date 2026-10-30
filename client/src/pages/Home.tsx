@@ -1906,7 +1906,7 @@ export default function Home() {
             <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
               <h2 className="text-lg font-extrabold text-slate-900">결과값 비교</h2>
               <div className="overflow-x-auto">
-                <table className="dart-results-table w-full text-sm border-collapse border border-slate-200">
+                <table className="dart-results-table dart-compare-table w-full text-sm border-collapse border border-slate-200">
                   <thead>
                     <tr className="bg-slate-100 text-slate-700 text-xs">
                       <th className="border border-slate-200 px-4 py-3 text-left">기업</th>
@@ -1932,9 +1932,6 @@ export default function Home() {
                         <tr key={cName} className="hover:bg-slate-50/80">
                           <td className="border border-slate-200 px-4 py-3.5 font-extrabold text-slate-900">
                             {comp.corpName}
-                            <span className="block text-[11px] font-normal text-slate-500">
-                              {(liveCompareResults[compareMetricIds[0]]?.find((row) => row.company === comp.corpName)?.period || (isRefreshingCompare ? "DART 조회 중…" : "조회 결과 없음")).replace(/\s*[·•]\s*(네이버 금융|FnGuide|Yahoo Finance)\b/gi, "").trim()}
-                            </span>
                             <span className="block text-[10px] font-semibold text-emerald-700">
                               {liveCompareResults[compareMetricIds[0]]?.find((row) => row.company === comp.corpName)?.basis || ""}
                             </span>
@@ -1946,7 +1943,6 @@ export default function Home() {
                             return (
                               <td key={mId} title="실시간 공시 기준 조회 결과" className="border border-slate-200 px-3 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
                                 <div>{hasValue ? formatMetricValue(serverRow!.value as number, mDef.unit) : !serverRow && isRefreshingCompare ? "조회 중…" : "수치 미검증"}</div>
-                                {hasValue && <div className="mt-1 text-[10px] font-normal text-emerald-700">{serverRow?.source || "DART"}</div>}
                                 {!hasValue && !isRefreshingCompare && <div className="mt-1 text-[10px] font-normal text-slate-500">원문에서 확인 필요</div>}
                               </td>
                             );
