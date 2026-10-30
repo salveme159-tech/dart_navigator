@@ -451,7 +451,14 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const nativeBalance = bsRows.filter(row => row.source_type !== "MAJOR");
   const basis = nativeBalance.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
   const totals = ["자산총계", "부채총계", "자본총계"].map(label => selectAccount(nativeBalance, label, undefined, basis));
-  const fullBalanceSheet = totals.every(Boolean) && nativeBalance.length >= 6 && nativeBalance.every(row => sameAccountScope(nativeBalance[0], row));
+  // OpenDART ALL can contain multiple account_detail values within one CFS report.
+  // Requiring every BS row to have the same account_detail incorrectly rejects
+  // otherwise complete balance sheets (and makes absent bond categories "missing").
+  // A complete statement requires the three control totals from ALL, a single
+  // requested financial-statement basis, and a sufficiently populated BS.
+  const hasAllSource = nativeBalance.some(row => row.source_type === "ALL");
+  const knownBases = new Set(nativeBalance.map(row => row.fs_div).filter(Boolean));
+  const fullBalanceSheet = hasAllSource && totals.every(Boolean) && nativeBalance.length >= 6 && knownBases.size <= 1;
   const coreFound = selectedCore.filter((item) => item.selected.length > 0).length;
   // Not every company issues bonds or has a current portion of long-term debt.
   // Only a complete ALL balance sheet without unresolved borrowing rows can
@@ -1781,6 +1788,7 @@ export async function compareDart(input: CompareInput, requestKey?: string) {
           `전체 재무상태표 판정 ${components.fullBalanceSheet ? "예" : "아니요"}`,
           `구성 완전성 ${components.coreComplete ? "예" : "아니요"}`,
           `미확인 ${components.missing.join("·") || "없음"}`,
+          `원문 차입성 계정 ${resolved.rows.filter(row => row.sj_div === "BS" && /차입|사채|대출|리스|Borrowing|Bond|Lease|Debenture/i.test(`${row.account_nm} ${row.account_id}`)).map(row => `${row.account_nm}[${row.account_id ?? "코드없음"}]=${row.thstrm_amount ?? "금액없음"}`).slice(0, 16).join("; ") || "없음"}`,
           ...(picked?.partialValue !== undefined && Number.isFinite(picked.partialValue) ? [`확인된 부분합 ${won(picked.partialValue)} (총차입금 아님)`] : []),
         ].join(" / ") : "";
         resultRows.push({ company: corp.name, found: false, value: null, unit: metric === "borrowingsRatio" ? "%" : "억원", period: `${periodLabel(resolved.period)} · ${modeLabel(resolved.period)}`, basis: fsLabel(resolved.fs), rceptNo: rcept || undefined, citation: citation(periodLabel(resolved.period), "재무상태표 차입성 계정", rcept), message: [picked?.disclaimer ?? missingMetricReason(resolved.rows,metric), diagnostic].filter(Boolean).join(" | ") });
