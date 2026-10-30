@@ -453,8 +453,16 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const totals = ["자산총계", "부채총계", "자본총계"].map(label => selectAccount(nativeBalance, label, undefined, basis));
   const sourceBases = new Set(nativeBalance.map(row => row.fs_div).filter(Boolean));
   const receipts = new Set(nativeBalance.map(row => row.rcept_no).filter(Boolean));
-  const fullBalanceSheet = totals.every(Boolean) && nativeBalance.length >= 6 &&
-    nativeBalance.every(row => row.source_type !== "MAJOR") && sourceBases.size <= 1 && receipts.size <= 1;
+  // DART ALL filings may omit an aggregate row (e.g. Equity) while still
+  // supplying the complete underlying balance sheet. Do not interpret that
+  // formatting difference as an absent loan or bond category.
+  const fullBalanceSheet = nativeBalance.length >= 6 &&
+    nativeBalance.every(row => row.source_type !== "MAJOR") &&
+    sourceBases.size <= 1 && receipts.size <= 1 &&
+    (totals.every(Boolean) || (nativeBalance.length >= 20 &&
+      (nativeBalance.some(row => row.source_type === "ALL") ||
+       nativeBalance.every(row => !row.source_type)) &&
+      totals.filter(Boolean).length >= 2));
   const coreFound = selectedCore.filter((item) => item.selected.length > 0).length;
   // Not every company issues bonds or has a current portion of long-term debt.
   // Only a complete ALL balance sheet without unresolved borrowing rows can
