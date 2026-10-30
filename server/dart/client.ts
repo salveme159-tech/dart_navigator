@@ -493,7 +493,16 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
   // If only an aggregate exists, its lease policy cannot be inferred: do not silently label it lease-excluded.
   const aggregateUsable = reported !== null && reported !== undefined && Number.isFinite(reported) &&
     nonLease.length > 0 && Math.abs(reported - subtotal) < 0.00001;
-  const confirmed = nonLease.length > 0 && Number.isFinite(subtotal) && (components.coreComplete || aggregateUsable);
+  // When the only disclosed borrowing is accompanied by a balanced BS
+  // (liabilities + equity), permit the explicitly disclosed amount without
+  // requiring non-existent bond or long-term borrowing categories.
+  const balanceOnly = rows.filter(row => row.sj_div === "BS");
+  const derivedAssets = resolveBalanceTotal(rows, period, "자산총계");
+  const simpleBalancedDisclosure = nonLease.length === 1 && balanceOnly.length === 3 &&
+    derivedAssets?.derived === true &&
+    !balanceOnly.some(row => /리스|lease/i.test(`${row.account_nm ?? ""} ${row.account_id ?? ""}`));
+  const confirmed = nonLease.length > 0 && Number.isFinite(subtotal) &&
+    (components.coreComplete || aggregateUsable || simpleBalancedDisclosure);
   // An explicit borrowings-and-bonds line is non-lease by definition. Use it only
   // when components are absent; never add it to component amounts.
   const combinedOnly = nonLease.length === 0 && combined !== null && Number.isFinite(combined);
@@ -517,7 +526,8 @@ function pickGrossBorrowingMetric(rows: Row[], period: Period, metric: "borrowin
   }
   const ratio = effectiveTotal / assets * 100;
   return { value: ratio, unit: "%", lines: [...lines, `분자 · 차입금 ${won(effectiveTotal)}`, `분모 · 자산총계 ${won(assets)}`,
-    ...(assetsResolved?.derived ? assetsResolved.lines : []), `계산 · ${ratio.toFixed(2)}%`], formula, disclaimer: null, sourceHeading };
+    ...(assetsResolved?.derived ? [...assetsResolved.lines, "부채총계 + 자본총계로 계산"] : []), `계산 · ${ratio.toFixed(2)}%`], formula,
+    disclaimer: combinedOnly ? "차입금및사채 공시 합계 사용(리스 미포함, 세부 구성 미확인)" : null, sourceHeading };
 }
 
 type PickedMetric = { partialValue?: number; missingComponents?: string[]; value: number; unit: string; lines: string[]; formula: string | null; disclaimer: string | null; sourceHeading: string };
