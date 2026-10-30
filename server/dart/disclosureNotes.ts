@@ -147,38 +147,22 @@ function isCurrentHeader(value: string, period: Period): boolean {
 }
 
 function selectTargetColumns(headers: string[], period: Period, beforeContext: string): Array<{ header: string; index: number }> {
-  // Date-bearing headers must map to ONE period. A merged header with both
-  // current and prior dates cannot establish which numeric column is current.
-  const datesOf = (text: string) => [...text.matchAll(/(20\d{2})\s*[./년-]\s*(0?[1-9]|1[0-2])(?=\D|$)/g)]
-    .map(m => `${Number(m[1])}-${Number(m[2])}`);
-  const target = `${period.year}-${targetMonth(period)}`;
-  const headerSafe = (header: string) => {
-    const dates = datesOf(header);
-    return !isPriorHeader(header) && !hasConflictingDateOrKind(header, period)
-      && (!dates.length || (new Set(dates).size === 1 && dates[0] === target));
-  };
-  const columns = headers.map((header, index) => ({header,index})).filter(col => col.index > 0 && headerSafe(col.header));
-  const explicit = columns.filter(col => datesOf(col.header).length > 0);
-  if (explicit.length === 1) return explicit;
-  if (explicit.length > 1) return []; // Ambiguous duplicate date headers.
-  // Context with several dates is comparison-period context, not proof of
-  // the current column. Require a uniquely labelled current header.
-  const contextDates = datesOf(beforeContext.slice(-400));
-  const contextAmbiguous = new Set(contextDates).size > 1;
-  const named = columns.filter(col => isCurrentHeader(col.header,period));
-  if (named.length === 1 && !contextAmbiguous) return named;
-  if (named.length > 1 && !contextAmbiguous) {
-    // A merged current-period header may span separate current/noncurrent
-    // liability columns. Both are required to reconstruct total lease debt.
-    const liquidity = named.map(({header}) => /비유동/.test(header) ? "noncurrent" : /유동/.test(header) ? "current" : "unknown");
-    if (named.length === 2 && new Set(liquidity).size === 2 && !liquidity.includes("unknown")) return named;
+  // 1순위: 원문 표 머리글에 보고기간의 실제 종료일(YYYY.MM)이 명시적으로 일치하는 열
+  const explicitDateCols = headers
+    .map((header, index) => ({ header, index }))
+    .filter(({ header, index }) => index > 0 && !isPriorHeader(header) && !hasConflictingDateOrKind(header, period) && matchesExplicitTargetDate(header, period));
+  if (explicitDateCols.length > 0) return explicitDateCols;
+
+  // 2순위: 기준일/기간 충돌 검증을 통과한 회차(제N기) 열
+  const ordinalCols = ordinalCurrentColumns(headers, period, beforeContext.slice(-400));
+  if (ordinalCols.length > 0) {
+    return ordinalCols.map((index) => ({ header: headers[index], index }));
   }
-  if (named.length > 1) return [];
-  if (contextAmbiguous) return [];
-  const ordinal = ordinalCurrentColumns(headers, period, beforeContext.slice(-400));
-  if (ordinal.length !== 1) return [];
-  const selected = columns.find(col => col.index === ordinal[0]);
-  return selected ? [selected] : [];
+
+  // 3순위: 당기/당반기/당분기 텍스트 헤더 매칭
+  return headers
+    .map((header, index) => ({ header, index }))
+    .filter(({ header, index }) => index > 0 && isCurrentHeader(header, period));
 }
 
 function tablePeriodContext(before: string): string {

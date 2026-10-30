@@ -340,12 +340,48 @@ function pickRawAccountMetrics(rows: Row[], period: Period, rceptNo: string) {
 
 type GrossBorrowingComponent = { group: string; account: string; value: number; row: Row };
 
+function stripAccountIdPrefix(accountId?: string): string {
+  return (accountId ?? "").trim().replace(/^(?:ifrs-full|ifrs|dart)_/i, "");
+}
+
+function isCurrentPortionId(accountId?: string): boolean {
+  const id = stripAccountIdPrefix(accountId);
+  if (!id || /^Noncurrent/i.test(id)) return false;
+  return /^(?:CurrentPortion|CurrentMaturities|CurrentBondsIssued)/i.test(id);
+}
+
+function isNoncurrentBorrowingOrBondId(accountId?: string): boolean {
+  const id = stripAccountIdPrefix(accountId);
+  if (!id || isCurrentPortionId(id)) return false;
+  return /^(?:Noncurrent|Longterm|LongTerm|BondsIssued|ConvertibleBondsIssued|DebenturesIssued|BondsPayable)/i.test(id) || /BorrowingsNoncurrent|LongTermDebtNoncurrent/i.test(id);
+}
+
 function leaseBucket(row: Row): "current" | "noncurrent" | "total" | null {
-  const name = normalizeAccountName(row.account_nm);
-  const id = (row.account_id ?? "").replace(/^(?:ifrs-full|dart)_/i, "");
-  if (/^(?:NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent)$/i.test(id) || /비유동.*리스|리스.*비유동|장기리스/.test(name)) return "noncurrent";
-  if (/^(?:CurrentLeaseLiabilities|LeaseLiabilitiesCurrent)$/i.test(id) || /유동.*리스|리스.*유동|단기리스/.test(name)) return "current";
-  return /^(?:LeaseLiabilities)$/i.test(id) || /^(?:리스부채|리스부채합계|리스부채총계)$/.test(name) ? "total" : null;
+  const id = stripAccountIdPrefix(row.account_id);
+  // 1순위: 명시적인 IFRS/DART 표준 계정코드 접두어 기반 판별
+  if (/^(?:NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent)$/i.test(id)) return "noncurrent";
+  if (/^(?:CurrentLeaseLiabilities|LeaseLiabilitiesCurrent)$/i.test(id)) return "current";
+  if (/^LeaseLiabilities$/i.test(id)) return "total";
+
+  // normalizeAccountName이 괄호 안의 '(유동)'/'(비유동)'을 제거할 수 있으므로 원문 계정명(순번·공백·괄호기호만 제거)과 정규화 계정명을 함께 확인합니다.
+  const rawCompact = (row.account_nm ?? "")
+    .replace(/^\s*(?:[0-9IVX]+|[가-하]|[①-⑳]|\([0-9IVX가-하]+\))\s*[.)]?\s*/i, "")
+    .replace(/[\s·ㆍ()（）[\]【】]/g, "");
+  const normCompact = normalizeAccountName(row.account_nm).replace(/[\s·ㆍ()（）[\]【】]/g, "");
+
+  const isNoncurrentName = (s: string) =>
+    /^(?:비유동리스부채|비유동성리스부채|장기리스부채|비유동리스부채합계|비유동성리스부채합계|장기리스부채합계|리스부채비유동|리스부채비유동성|리스부채장기)$/.test(s) ||
+    (/비유동.*리스|리스.*비유동|장기.*리스|리스.*장기/.test(s) && !/유동성대체/.test(s));
+  const isCurrentName = (s: string) =>
+    !isNoncurrentName(s) && !/비유동/.test(s) && (
+      /^(?:유동리스부채|유동성리스부채|단기리스부채|유동리스부채합계|유동성리스부채합계|단기리스부채합계|리스부채유동|리스부채유동성|리스부채단기)$/.test(s) ||
+      /유동.*리스|리스.*유동|단기.*리스|리스.*단기/.test(s)
+    );
+
+  if (isNoncurrentName(rawCompact) || isNoncurrentName(normCompact)) return "noncurrent";
+  if (isCurrentName(rawCompact) || isCurrentName(normCompact)) return "current";
+  if (/^(?:리스부채|리스부채합계|리스부채총계)$/.test(rawCompact) || /^(?:리스부채|리스부채합계|리스부채총계)$/.test(normCompact)) return "total";
+  return null;
 }
 
 /**
@@ -357,27 +393,32 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const bsRows = rows.filter((row) => row.sj_div === "BS");
   const normalize = normalizeAccountName;
   const excluded = /사채할인발행차금|차입금할인발행차금|미상각할인차금|할인발행차금|상환할증금|사채발행비|총차입금|차입금총계|차입금합계|총차입부채|차입금및사채|차입금및회사채|차입금과사채/;
+  const isCurrentBondRow = (account: string, rawId?: string) => {
+    const id = stripAccountIdPrefix(rawId);
+    return /사채/.test(account) || /^(?:CurrentBondsIssued|CurrentPortionOfBondsIssued|CurrentPortionOfConvertibleBonds)/i.test(id);
+  };
   const groups: Array<{ group: string; aliases: string[]; ids: RegExp[]; lease?: boolean; preferAggregate?: string[]; preferSingle?: string[] }> = [
-    { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings/i], preferSingle: ["단기차입금", "단기차입부채"] },
-    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성전환사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
-    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금", "비유동성금융기관차입금"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
-    { group: "사채", aliases: ["사채", "회사채", "비유동사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^ifrs-full_BondsIssued$|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i], preferSingle: ["사채", "회사채"] },
-    { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
-    { group: "비유동리스부채", aliases: ["비유동리스부채", "장기리스부채", "비유동리스부채합계"], ids: [/NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent/i], lease: true, preferSingle: ["비유동리스부채", "장기리스부채"] },
+    { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금", "유동성단기차입금"], ids: [/^(?:ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings)$/i], preferSingle: ["단기차입금", "단기차입부채"] },
+    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성전환사채", "유동성사채", "유동성회사채", "유동성장기사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/^(?:CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongTermBorrowings|CurrentPortionOfNoncurrentBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings|CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued|CurrentPortionOfBondsIssued)$/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
+    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금", "비유동장기차입금"], ids: [/^(?:LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent|NoncurrentPortionOfOtherNoncurrentBorrowings|NoncurrentPortionOfNoncurrentBorrowings|NoncurrentPortionOfLongtermBorrowings)$/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
+    { group: "사채", aliases: ["사채", "회사채", "비유동사채", "비유동회사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^(?:BondsIssued|NoncurrentPortionOfNoncurrentBondsIssued|NoncurrentBondsIssued|ConvertibleBondsIssued|DebenturesIssued|BondsPayable)$/i], preferSingle: ["사채", "회사채", "비유동사채", "비유동회사채"] },
+    { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/^(?:CurrentLeaseLiabilities|LeaseLiabilitiesCurrent)$/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
+    { group: "비유동리스부채", aliases: ["비유동리스부채", "장기리스부채", "비유동리스부채합계", "비유동성리스부채"], ids: [/^(?:NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent)$/i], lease: true, preferSingle: ["비유동리스부채", "장기리스부채"] },
   ];
   const candidatesFor = (spec: typeof groups[number]) => bsRows.flatMap((row) => {
     const account = normalize(row.account_nm);
-    const id = row.account_id ?? "";
+    const rawId = row.account_id ?? "";
+    const id = stripAccountIdPrefix(rawId);
     if (!account && !spec.ids.some((pattern) => pattern.test(id))) return [];
     if (!spec.lease && account.includes("리스")) return [];
     if (!spec.lease && leaseBucket(row)) return [];
     const currentBankBorrowing = /^유동성금융기관차입금/.test(account);
-    if (spec.group === "단기차입금" && ((/유동성|유동.*장기/.test(account) && !currentBankBorrowing) || /Noncurrent|Longterm|CurrentPortion|CurrentMaturities|BorrowingsNoncurrent/i.test(id))) return [];
+    if (spec.group === "단기차입금" && ((/유동성|유동.*장기/.test(account) && !currentBankBorrowing) || isNoncurrentBorrowingOrBondId(rawId) || isCurrentPortionId(rawId))) return [];
     if (spec.group === "유동리스부채" && leaseBucket(row) !== "current") return [];
     if (spec.group === "비유동리스부채" && leaseBucket(row) !== "noncurrent") return [];
     if (excluded.test(account)) return [];
-    if (spec.group === "사채" && account.startsWith("유동성")) return [];
-    if (spec.group === "장기차입금" && (account.startsWith("유동성") || /CurrentPortion/i.test(id))) return [];
+    if (spec.group === "사채" && (account.startsWith("유동성") || isCurrentPortionId(rawId))) return [];
+    if (spec.group === "장기차입금" && (account.startsWith("유동성") || isCurrentPortionId(rawId))) return [];
     if (spec.lease && !/리스/i.test(account) && !spec.ids.some((pattern) => pattern.test(id))) return [];
     const aliasIndex = spec.aliases.findIndex((alias) => account === alias || account.startsWith(alias));
     const idMatch = spec.ids.some((pattern) => pattern.test(id));
@@ -385,7 +426,7 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
     const raw = (row.thstrm_amount ?? "").replace(/,/g, "").trim();
     const value = /^[-—–－−]$/.test(raw) ? 0 : amountOf(row);
     if (value === null || !Number.isFinite(value)) return [];
-    return [{ row, value, account, aliasIndex, idMatch, accountLength: account.length }];
+    return [{ row, value, account, aliasIndex: aliasIndex >= 0 ? aliasIndex : spec.aliases.length, idMatch, accountLength: account.length }];
   }).sort((a, b) => a.aliasIndex - b.aliasIndex || a.accountLength - b.accountLength);
 
   const selectGroupRows = (spec: typeof groups[number]) => {
@@ -396,9 +437,20 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
       for (const alias of spec.preferAggregate) {
         const found = candidates.filter((item) => item.account === alias || item.account.startsWith(alias)).sort((a, b) => a.accountLength - b.accountLength)[0];
         if (found) {
-          // A loan's current portion does not include separately disclosed convertible bonds.
-          if (spec.group === "유동성장기부채" && !/사채/.test(found.account)) {
-            return [found, ...candidates.filter(item => item.row !== found.row && /사채/.test(item.account))];
+          // '유동성장기부채' 포괄 계정과 '유동성회사채'/'유동성차입금' 세부 계정이 동시에 존재할 때의 중복 합산 방어:
+          // 1) 유동성차입금 하위 계정이 별도로 공시되어 있고, '유동성장기부채' 금액이 (유동성차입금 + 유동성사채) 합계와 일치하면 이미 사채를 포함한 총계이므로 found만 반환합니다.
+          // 2) 하위 유동성차입금 계정이 따로 없고 '유동성장기부채'(또는 유동성장기차입금)만 공시된 상태에서 별도 '유동성사채/유동성회사채'가 분리 공시된 경우에만 사채 행을 함께 집계합니다.
+          if (spec.group === "유동성장기부채" && !isCurrentBondRow(found.account, found.row.account_id)) {
+            const bondItems = candidates.filter((item) => item.row !== found.row && isCurrentBondRow(item.account, item.row.account_id));
+            if (!bondItems.length) return [found];
+            const loanSubItems = candidates.filter((item) => item.row !== found.row && !isCurrentBondRow(item.account, item.row.account_id));
+            const bondSum = bondItems.reduce((sum, item) => sum + item.value, 0);
+            const loanSubSum = loanSubItems.reduce((sum, item) => sum + item.value, 0);
+            const tol = Math.max(0.5, Math.abs(found.value) * 0.0001);
+            if (loanSubItems.length > 0 && Math.abs(found.value - (loanSubSum + bondSum)) <= tol) {
+              return [found];
+            }
+            return [found, ...bondItems];
           }
           return [found];
         }
@@ -434,13 +486,28 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   let leaseItems: GrossBorrowingComponent[] = leaseSpecs.flatMap((spec) => selectGroupRows(spec).map((found) => ({ group: spec.group, account: (found.row.account_nm ?? spec.group).trim(), value: found.value, row: found.row })));
   // '리스부채'만 단독 계정으로 제공하는 공시도 지원하되 구성 행이 있으면 합계 행을 더하지 않습니다.
   if (!leaseItems.length) {
-    const genericLease = bsRows.flatMap((row) => {
+    const hasAllRows = bsRows.some((row) => row.source_type === "ALL");
+    const candidateBsRows = hasAllRows ? bsRows.filter((row) => row.source_type !== "MAJOR") : bsRows;
+    const genericRows = candidateBsRows.flatMap((row) => {
       const name = normalize(row.account_nm);
       if (!/^(?:리스부채|리스부채합계|리스부채총계)$/.test(name)) return [];
       const value = amountOf(row);
-      return value === null || !Number.isFinite(value) ? [] : [{ group: "리스부채", account: (row.account_nm ?? "리스부채").trim(), value, row }];
-    })[0];
-    if (genericLease) leaseItems = [genericLease];
+      return value === null || !Number.isFinite(value) ? [] : [{ name, value, row, id: stripAccountIdPrefix(row.account_id) }];
+    });
+    const totalLeaseRow = genericRows.find((item) => /합계|총계/.test(item.name));
+    const plainRows = genericRows.filter((item) => !/합계|총계/.test(item.name));
+    if (totalLeaseRow) {
+      leaseItems = [{ group: "리스부채", account: (totalLeaseRow.row.account_nm ?? "리스부채").trim(), value: totalLeaseRow.value, row: totalLeaseRow.row }];
+    } else if (plainRows.length === 1) {
+      leaseItems = [{ group: "리스부채", account: (plainRows[0].row.account_nm ?? "리스부채").trim(), value: plainRows[0].value, row: plainRows[0].row }];
+    } else if (plainRows.length === 2) {
+      // 유동·비유동 구간에 각각 '리스부채'라는 동일 계정명으로 1행씩 공시된 경우(최대 2행, 서로 같은 non-empty 계정코드 중복이 아닐 때) 합산
+      const nonEmptyIds = plainRows.map((item) => item.id).filter(Boolean);
+      const duplicateId = nonEmptyIds.length === 2 && nonEmptyIds[0] === nonEmptyIds[1];
+      if (!duplicateId) {
+        leaseItems = [{ group: "리스부채", account: `리스부채(${plainRows.length}개 행 합산)`, value: plainRows.reduce((sum, item) => sum + item.value, 0), row: plainRows[0].row }];
+      }
+    }
   }
   const usedRows = new Set<Row>();
   const items = [...filteredCore, ...leaseItems].filter((item) => {
@@ -845,7 +912,64 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
   return { value, unit: "억원", lines, formula: null, disclaimer: null, sourceHeading: `${config.sj.includes("CF") ? "현금흐름표" : "손익계산서"} > ${METRIC_LABELS[metric]}` };
 }
 
-async function withDartLeaseFallback(args: {
+/**
+ * 연결(CFS)·별도(OFS) 기준에서 재무상태표 본문의 비리스 차입금 구성 계정(단기차입금·유동성장기부채·사채·장기차입금)이
+ * 완전히 확인되었으나, 동일 회계기준(CFS/OFS)의 본문 및 원문 주석에서 리스부채만 확인되지 않은 경우(예: 별도 주석만 존재할 때),
+ * 다른 회계기준 주석을 혼합하지 않고 해당 기준에서 실제 확인된 비리스 차입금 금액을 유지하며 리스부채 미확인 안내를 명시합니다.
+ */
+const LEASE_ONLY_MISSING = new Set(["유동리스부채", "비유동리스부채", "리스부채"]);
+async function withDartLeaseFallback(args: Parameters<typeof withDartLeaseFallbackCore>[0]): ReturnType<typeof withDartLeaseFallbackCore> {
+  const result = await withDartLeaseFallbackCore(args);
+  if (result.picked && Number.isFinite(result.picked.value)) return result;
+  const original = args.picked;
+  const missing = original?.missingComponents ?? [];
+  if (!original || original.partialValue === undefined || !Number.isFinite(original.partialValue) || !missing.length || !missing.every((item) => LEASE_ONLY_MISSING.has(item))) return result;
+  const total = original.partialValue;
+  const note = `리스부채(${missing.join("·")})는 재무상태표 본문과 DART 원문 주석에서 같은 기간 금액을 확인하지 못해 포함하지 않았습니다.`;
+  const baseLines = original.lines.filter((line) => !/^확인된 차입금 부분합/.test(line));
+  const disclaimer = `${note} 확인된 차입금 부분합(${won(total)}) 기준으로 표시하며, 다른 회계기준(연결·별도)의 주석 금액을 혼합하지 않았습니다.`;
+  if (args.metric === "borrowings") {
+    return {
+      picked: {
+        value: total,
+        partialValue: total,
+        missingComponents: missing,
+        unit: "억원",
+        lines: [...baseLines, `분자 · 재무상태표에서 확인된 차입금·사채 계정 합계(확인된 차입금 부분합): ${won(total)}`, note],
+        formula: "총차입금 = 단기차입금 + 유동성장기부채 + 사채 + 장기차입금 (리스부채 미확인으로 제외)",
+        disclaimer,
+        sourceHeading: "재무상태표 > 차입금 구성 계정 (리스부채 미확인)",
+      },
+      url: result.url,
+    };
+  }
+  const resolvedAssets = resolveBalanceTotal(args.rows, args.period, "자산총계");
+  const assets = resolvedAssets?.value ?? null;
+  if (!resolvedAssets || assets === null || !Number.isFinite(assets) || assets <= 0) return result;
+  const ratio = total / assets * 100;
+  return {
+    picked: {
+      value: ratio,
+      partialValue: ratio,
+      missingComponents: missing,
+      unit: "%",
+      lines: [
+        ...baseLines,
+        `분자 · 재무상태표에서 확인된 차입금·사채 계정 합계(확인된 차입금 부분합): ${won(total)}`,
+        note,
+        ...resolvedAssets.lines,
+        `분모 · 자산총계${resolvedAssets.derived ? "(부채총계 + 자본총계로 계산)" : ""}: ${won(assets)}`,
+        `계산 · ${won(total)} ÷ ${won(assets)} × 100 = ${ratio.toFixed(2)}%`,
+      ],
+      formula: "차입금의존도 = (단기차입금 + 유동성장기부채 + 사채 + 장기차입금) ÷ 자산총계 × 100 (리스부채 미확인으로 제외)",
+      disclaimer,
+      sourceHeading: "재무상태표 > 차입금 구성 계정·자산총계 (리스부채 미확인)",
+    },
+    url: result.url,
+  };
+}
+
+async function withDartLeaseFallbackCore(args: {
   corp: { name?: string; code?: string; stock?: string };
   rows: Row[];
   period: Period;
