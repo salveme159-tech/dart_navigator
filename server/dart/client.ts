@@ -600,19 +600,27 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
   }
 
   if (metric === "workingCapital") {
-    const receivable = findRowLike(rows, ["BS"], ["매출채권", "매출채권및기타채권", "유동매출채권"]);
-    const inventory = findRowLike(rows, ["BS"], ["재고자산", "유동재고자산"]);
-    const payable = findRowLike(rows, ["BS"], ["매입채무", "매입채무및기타채무", "유동매입채무"]);
-    const receivablesValue = receivable ? amountOf(receivable) : null;
-    const inventoryValue = inventory ? amountOf(inventory) : null;
-    const payableValue = payable ? amountOf(payable) : null;
-    if (receivablesValue === null || inventoryValue === null || payableValue === null) return null;
+    // Resolve every component through the same CFS/OFS-aware account selector used
+    // by snapshot and comparison. Never treat a missing payable as zero.
+    const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
+    const parts = ["매출채권", "재고자산", "매입채무"] as const;
+    const selected = parts.map(name => ({ name, result: selectAccount(rows, name, period, basis) }));
+    if (selected.some(item => !item.result)) return null;
+    const [receivable, inventory, payable] = selected.map(item => item.result!);
+    // A combined trade-and-other account is not identical to pure trade payables;
+    // explicitly identify the actual selected source in the calculation.
+    const value = receivable.value + inventory.value - payable.value;
     return {
-      value: receivablesValue + inventoryValue - payableValue,
-      unit: "억원",
-      lines: [`매출채권 ${won(receivablesValue)} + 재고자산 ${won(inventoryValue)} − 매입채무 ${won(payableValue)}`],
-      formula: "운전자본 = 매출채권 + 재고자산 − 매입채무",
-      disclaimer: "기업별 계정 분류에 따라 구성 계정이 달라질 수 있으며, 본 화면은 프로젝트에 정의된 운전자본 공식을 적용합니다.",
+      value, unit: "억원",
+      lines: [
+        `${receivable.row.account_nm}: ${won(receivable.value)}`,
+        `${inventory.row.account_nm}: ${won(inventory.value)}`,
+        `${payable.row.account_nm}: ${won(payable.value)}`,
+        `계산: ${won(receivable.value)} + ${won(inventory.value)} − ${won(payable.value)} = ${won(value)}`,
+      ],
+      formula: `운전자본 = ${receivable.row.account_nm} + ${inventory.row.account_nm} − ${payable.row.account_nm}`,
+      disclaimer: /기타/.test(`${receivable.row.account_nm}${payable.row.account_nm}`)
+        ? "공시된 매출채권·기타채권 및 매입채무·기타채무 합계 계정을 사용할 수 있으며, 순수 영업운전자본과 범위가 다를 수 있습니다." : null,
       sourceHeading: "재무상태표 > 매출채권·재고자산·매입채무",
     };
   }
