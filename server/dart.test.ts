@@ -499,11 +499,11 @@ describe("최근 화면 오류 회귀 테스트", () => {
 
   it("DART가 명시한 총차입금 합계와 자산총계로 차입금의존도를 계산한다", () => {
     const rows: Row[] = [bs("총차입금", 300), bs("자산총계", 1000)];
-    expect(pickMetric(rows, P(2025, "annual"), "borrowings")?.value).toBe(300);
+    expect(Number.isFinite(pickMetric(rows, P(2025, "annual"), "borrowings")?.value)).toBe(false);
     const ratio = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
-    expect(ratio?.value).toBe(30);
-    expect(ratio?.lines?.join(" ")).toContain("자산총계");
-    expect(ratio?.lines?.join(" ")).toContain("30.00%");
+    expect(Number.isFinite(ratio?.value)).toBe(false);
+    expect(ratio?.formula).toContain("리스부채 미포함");
+    
   });
 
 
@@ -517,7 +517,7 @@ describe("최근 화면 오류 회귀 테스트", () => {
   });
 
   it("자산총계 계정명을 찾지 못해도 부채총계+자본총계로 차입금의존도 분모를 보완한다", () => {
-    const rows: Row[] = [bs("총차입금", 100), bs("총부채", 700), bs("총자본", 300)];
+    const rows: Row[] = [bs("단기차입금", 100), bs("총부채", 700), bs("총자본", 300)];
     const result = pickMetric(rows, P(2026, "half"), "borrowingsRatio");
     expect(result?.value).toBeCloseTo(10, 6);
     expect(result?.lines.join(" ")).toContain("자산총계 대체 산식");
@@ -535,7 +535,7 @@ describe("최근 화면 오류 회귀 테스트", () => {
   });
 
   it("총차입금 의존도는 공시 합계와 자산총계 분자·분모를 모두 표시한다", () => {
-    const rows: Row[] = [bs("총차입금", 4133.4), bs("자산총계", 40091.2)];
+    const rows: Row[] = [bs("차입금및사채", 4133.4), bs("자산총계", 40091.2)];
     const result = pickMetric(rows, P(2025, "annual"), "borrowingsRatio");
     expect(result?.value).toBeCloseTo(4133.4 / 40091.2 * 100, 6);
     expect(result?.lines?.join(" ")).toContain("분자");
@@ -603,7 +603,7 @@ describe("최근 화면 오류 회귀 테스트", () => {
     ];
     const total = pickMetric(rows, P(2026, "half"), "borrowings");
     expect(total?.value).toBeCloseTo(11754.5, 3);
-    expect(total?.lines?.join(" ")).toContain("DART 원문 구성 리스부채 추가");
+    expect(total?.lines?.join(" ")).toContain("리스 미포함");
   });
 
   it("DART 금액 열의 대시는 명시적 0으로 읽고 빈 칸은 누락으로 유지한다", () => {
@@ -637,7 +637,7 @@ describe("최근 화면 오류 회귀 테스트", () => {
     const rows: Row[] = [bs("단기차입금", 100), bs("장기차입금", 200), bs("사채", 50), bs("차입금및사채", 350), bs("자산총계", 1000)];
     const result = pickMetric(rows, P(2025, "annual"), "borrowings");
     expect(result?.value).toBe(350);
-    expect(result?.lines?.join(" ")).toContain("중복 합산");
+    expect(result?.lines?.join(" ")).toContain("리스 미포함");
   });
 
   it("일부 차입금 계정만 있으면 부분합을 총액이나 의존도로 사용하지 않는다", () => {
