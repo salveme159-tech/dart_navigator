@@ -49,8 +49,8 @@ test('종목 현황과 비교분석은 유동자산·원천계정·차입금·�
 });
 test('본문의 기타금융부채로 누락된 차입금은 같은 원문 주석의 합계와 리스로 보완',async()=>{const {client:c}=fresh(true);const calls=network({notes:true});const snapshot=await c.snapshotDart('검증전선',false,key,false,'CFS');assert.equal(snapshot.metrics.borrowings.value,350);assert.ok(Math.abs(snapshot.metrics.borrowingsRatio.value-350/1500*100)<1e-9);const comparison=await c.compareDart({companies:['검증전선'],metric:'borrowings',year,period:'half',basis:'CFS',includeValidation:false},key);assert.equal(comparison.rows[0].value,350);assert.ok(calls()>=1);});
 test('다른 연결·별도 주석으로 빈 차입금을 보정하지 않음',async()=>{const {client:c}=fresh(true);network({notes:true,noteScope:'별도'});const result=await c.compareDart({companies:['검증전선'],metric:'borrowings',year,period:'half',basis:'CFS',includeValidation:false},key);
- // 별도 주석의 합계(350)를 연결 값으로 가져오지 않습니다. 대신 연결 재무상태표에서 확인된 차입금 계정 합계(300)만 쓰고, 리스부채를 포함하지 못했다는 안내를 남깁니다.
- assert.equal(result.rows[0].value,300);assert.notEqual(result.rows[0].value,350);});
+ // 연결 기준 리스부채가 확인되지 않으면 부분합을 확정 총차입금으로 노출하지 않습니다.
+ assert.equal(result.rows[0].found,false);assert.equal(result.rows[0].value,null);assert.notEqual(result.rows[0].value,350);});
 test('비교분석의 네 공시 기간과 연결·별도에서 원천계정 조회, 하반기 요청은 거절',async()=>{const {client:c}=fresh();network();for(const basis of ['CFS','OFS'])for(const period of ['q1','half','q3','annual']){const result=await c.compareDart({companies:['검증전선'],metric:'currentAssets',year,period,basis,includeValidation:false},key);assert.equal(result.rows[0].value,500);assert.match(result.rows[0].basis,basis==='CFS'?/연결/:/별도/);}await assert.rejects(c.compareDart({companies:['검증전선'],metric:'revenue',period:'h2',year,basis:'CFS'},key),/1분기·상반기·3분기·연간/);});
 
 test('대한전선 실제 계정코드 사례(NoncurrentPortionOfOtherNoncurrentBorrowings·유동성회사채·리스부채)에서 누락 없이 4,805.6억원 합산 및 중복 방지',()=>{
@@ -82,4 +82,59 @@ test('대한전선 실제 계정코드 사례(NoncurrentPortionOfOtherNoncurrent
  ];
  const pickedAgg=c.pickMetric(withAggregate,e.P(year,'half'),'borrowings');
  assert.ok(pickedAgg && Math.abs(pickedAgg.value-(expected+100))<1e-6,'유동성장기부채 합계와 유동성회사채가 중복 합산되지 않아야 함');
+});
+
+// Regression: financial statement code variants in the user's comparison screenshot.
+test('일진전기형 CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings 및 LongtermBorrowings 인식',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance().filter(r=>!/(?:단기차입금|장기차입금)/.test(r.account_nm)),
+  row('유동성차입금및유동성장기차입금',100,{account_id:'ifrs-full_CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings'}),
+  row('비유동차입금',150,{account_id:'ifrs-full_LongtermBorrowings'})];
+ const picked=c.pickMetric(rows,e.P(year,'half'),'borrowings');
+ assert.ok(Number.isFinite(picked.value));assert.equal(picked.value,300);
+});
+test('CurrentLoansReceived 및 NoncurrentLoansReceived 계정 인식',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance().filter(r=>!/(?:단기차입금|장기차입금)/.test(r.account_nm)),
+  row('유동성차입금',100,{account_id:'ifrs-full_CurrentLoansReceived'}),
+  row('비유동성 금융기관 차입금',150,{account_id:'ifrs-full_NoncurrentLoansReceived'})];
+ const picked=c.pickMetric(rows,e.P(year,'half'),'borrowings');
+ assert.ok(Number.isFinite(picked.value));assert.equal(picked.value,300);
+});
+test('리스부채 유동·비유동 구분 없는 동일 명칭 2개 행은 무조건 합산하지 않음',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance().filter(r=>!/리스/.test(r.account_nm)),row('리스부채',20,{account_id:'-표준계정코드 미사용-'}),row('리스부채',30,{account_id:'dart_LeaseLiabilities'})];
+ const picked=c.pickMetric(rows,e.P(year,'half'),'borrowings');
+ assert.ok(!Number.isFinite(picked.value));
+});
+test('유동 차입금 포괄 계정과 유동성장기차입금 세부 행이 함께 있을 때 이중 합산하지 않음',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance().filter(r=>!/(?:단기차입금|장기차입금)/.test(r.account_nm)),
+ row('유동성차입금및유동성장기차입금',250,{account_id:'ifrs-full_CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings'}),
+ row('유동성장기차입금',50,{account_id:'dart_CurrentPortionOfLongtermBorrowings'})];
+ const result=c.pickMetric(rows,e.P(year,'half'),'borrowings');
+ assert.equal(result.value,300);
+});
+
+// Added 2026-10-30: explicit code patterns from missing company reports.
+test('복합 유동 금융기관 차입금 표준코드를 별도 세부계정과 중복 없이 반영',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance().filter(r=>!/(?:단기차입금|장기차입금)/.test(r.account_nm)),
+  row('유동성금융기관차입금',100,{account_id:'ifrs-full_CurrentLoansReceivedAndCurrentPortionOfNoncurrentLoansReceived'}),
+  row('유동성장기차입금',30,{account_id:'dart_CurrentPortionOfLongtermBorrowings'}),
+  row('비유동성금융기관차입금',150,{account_id:'ifrs-full_NoncurrentPortionOfNoncurrentLoansReceived'})];
+ const p=c.pickMetric(rows,e.P(year,'half'),'borrowings');
+ assert.ok(p && Number.isFinite(p.value));assert.equal(p.value,300);
+});
+test('dart 유동성전환사채를 차입성 부채에 정확히 한 번 포함',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance(),row('유동성전환사채',25,{account_id:'dart_CurrentPortionOfConvertibleBonds'})];
+ const p=c.pickMetric(rows,e.P(year,'half'),'borrowings');
+ assert.ok(p && Number.isFinite(p.value));assert.equal(p.value,375);
+});
+test('비유동 금융기관 차입금 표준코드를 장기차입금으로 분류',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance().filter(r=>r.account_nm!=='장기차입금'),row('비유동성금융기관차입금',200,{account_id:'ifrs-full_NoncurrentPortionOfNoncurrentLoansReceived'})];
+ const p=c.pickMetric(rows,e.P(year,'half'),'borrowings');
+ assert.ok(p && Number.isFinite(p.value));assert.equal(p.value,350);
 });
