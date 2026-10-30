@@ -359,8 +359,8 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   const excluded = /사채할인발행차금|차입금할인발행차금|미상각할인차금|할인발행차금|상환할증금|사채발행비|총차입금|차입금총계|차입금합계|총차입부채|차입금및사채|차입금및회사채|차입금과사채/;
   const groups: Array<{ group: string; aliases: string[]; ids: RegExp[]; lease?: boolean; preferAggregate?: string[]; preferSingle?: string[] }> = [
     { group: "단기차입금", aliases: ["단기차입금", "단기차입부채", "단기금융기관차입금", "단기은행차입금", "단기대출금", "유동차입금", "유동성금융기관차입금"], ids: [/ShorttermBorrowings|ShortTermBorrowings|ShorttermLoansAndBorrowings|ShortTermLoansAndBorrowings|CurrentBorrowings|BorrowingsCurrent|CurrentLoansAndBorrowings|LoansAndBorrowingsCurrent|CurrentFinancialInstitutionBorrowings/i], preferSingle: ["단기차입금", "단기차입부채"] },
-    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
-    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
+    { group: "유동성장기부채", aliases: ["유동성장기부채", "유동성장기차입금", "유동성장기차입부채", "유동성장기금융부채", "유동성금융기관차입금", "유동성차입부채", "유동성차입금", "비유동차입금의유동성대체부분", "유동성장기부채및사채", "유동성전환사채", "유동성사채", "유동성장기사채", "유동성전환사채", "유동성신주인수권부사채", "유동성교환사채"], ids: [/CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermBorrowings|CurrentPortionOfLongtermFinancialLiabilities|CurrentMaturitiesOfLongtermBorrowings/i], preferAggregate: ["유동성장기부채", "유동성장기부채및사채"] },
+    { group: "장기차입금", aliases: ["장기차입금", "장기차입부채", "장기금융기관차입금", "장기금융부채", "장기대출금", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금", "비유동성금융기관차입금"], ids: [/LongtermBorrowings|LongTermBorrowings|LongtermLoansAndBorrowings|LongTermLoansAndBorrowings|NoncurrentBorrowings|NoncurrentLoansAndBorrowings|NoncurrentFinancialInstitutionBorrowings|LongTermDebtNoncurrent/i], preferAggregate: ["장기차입금", "장기차입부채", "장기금융부채", "비유동차입금", "비유동차입부채", "비유동성금융기관차입금", "비유동금융기관차입금"] },
     { group: "사채", aliases: ["사채", "회사채", "비유동사채", "전환사채", "신주인수권부사채", "교환사채", "단기사채"], ids: [/^ifrs-full_BondsIssued$|ConvertibleBondsIssued|DebenturesIssued|BondsPayable/i], preferSingle: ["사채", "회사채"] },
     { group: "유동리스부채", aliases: ["유동리스부채", "유동성리스부채", "유동리스부채합계", "유동성리스부채합계"], ids: [/CurrentLeaseLiabilities|LeaseLiabilitiesCurrent/i], lease: true, preferSingle: ["유동리스부채", "유동성리스부채"] },
     { group: "비유동리스부채", aliases: ["비유동리스부채", "장기리스부채", "비유동리스부채합계"], ids: [/NoncurrentLeaseLiabilities|LeaseLiabilitiesNoncurrent/i], lease: true, preferSingle: ["비유동리스부채", "장기리스부채"] },
@@ -456,7 +456,7 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   // otherwise complete balance sheets (and makes absent bond categories "missing").
   // A complete statement requires the three control totals from ALL, a single
   // requested financial-statement basis, and a sufficiently populated BS.
-  const hasAllSource = nativeBalance.some(row => row.source_type === "ALL");
+  const hasAllSource = nativeBalance.some(row => row.source_type === "ALL") || (nativeBalance.length >= 6 && nativeBalance.every(row => !row.source_type));
   const knownBases = new Set(nativeBalance.map(row => row.fs_div).filter(Boolean));
   const fullBalanceSheet = hasAllSource && totals.every(Boolean) && nativeBalance.length >= 6 && knownBases.size <= 1;
   const coreFound = selectedCore.filter((item) => item.selected.length > 0).length;
