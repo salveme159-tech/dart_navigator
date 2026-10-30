@@ -1581,21 +1581,14 @@ export default function Home() {
                           </button>
                         </div>
                         <div className="text-lg font-extrabold text-slate-900 mt-1.5">
-                          {formatMetricValue(val, mDef.unit)}
+                          {Number.isFinite(val) ? formatMetricValue(val, mDef.unit) : "수치 미검증"}
                         </div>
-                        {hasAuthoritativeMetric && !Number.isFinite(serverMetricValue) && !Number.isFinite(val) && (
-                          <div className="mt-1 text-[10px] leading-relaxed text-amber-700">
-                            {mDef.id === "차입금" || mDef.id === "차입금의존도" ? "자료 없음" : (metricDisclaimerForDisplay || "필요한 공시 원천 계정을 확인하지 못했습니다. 누락값을 임의로 채우지 않았습니다.")}
-                          </div>
-                        )}
-                        {!Number.isFinite(val) && !serverMetricKey && (
-                          <div className="mt-1 text-[10px] leading-relaxed text-amber-700">
-                            선택한 실제 {currentCompany.basisCode === "OFS" ? "별도" : "연결"} 공시에서 이 계정의 금액을 이름·계정코드로 확인하지 못했습니다. 다른 기준의 수치나 과거 캐시로 대체하지 않았습니다.
-                          </div>
+                        {!Number.isFinite(val) && (
+                          <div className="mt-1 text-[10px] leading-relaxed text-slate-500">원문에서 확인 필요</div>
                         )}
                         {(mDef.id === "차입금" || mDef.id === "차입금의존도") && <div className="mt-1 text-[10px] font-medium text-slate-500">리스 미포함</div>}
                         <button type="button" onClick={() => setExpandedCalculationMetric((current) => current === mId ? null : mId)} className="mt-1 self-start rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100">{expandedCalculationMetric === mId ? "계산식 닫기" : "계산식 살펴보기"}</button>
-                        {expandedCalculationMetric === mId && <div className="mt-2 rounded-lg border border-emerald-100 bg-emerald-50/70 p-3 text-xs leading-relaxed"><div className="font-extrabold text-slate-800">계산식</div><div className="mt-1 text-slate-700">{mDef.id === "영업이익률" ? "(영업이익 ÷ 매출액) × 100" : mDef.id === "순이익률" ? "(당기순이익 ÷ 매출액) × 100" : metricFormulaForDisplay}</div>{marginCalculationLines ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{marginCalculationLines.map((line, index) => <div key={`${mId}-calculation-${index}`}>{line}</div>)}</div> : metricLinesForDisplay.length ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{metricLinesForDisplay.map((line, index) => <div key={`${mId}-${index}`}>{line}</div>)}</div> : <div className="mt-2 text-amber-800">공시 원천 계정을 확인하지 못했습니다. 계산에 필요한 계정과 기간을 확인하세요.</div>}{!marginCalculationLines && metricDisclaimerForDisplay && <div className="mt-2 text-amber-800">{metricDisclaimerForDisplay}</div>}</div>}
+                        {expandedCalculationMetric === mId && <div className="mt-2 rounded-lg border border-emerald-100 bg-emerald-50/70 p-3 text-xs leading-relaxed"><div className="font-extrabold text-slate-800">계산식</div><div className="mt-1 text-slate-700">{mDef.id === "영업이익률" ? "(영업이익 ÷ 매출액) × 100" : mDef.id === "순이익률" ? "(당기순이익 ÷ 매출액) × 100" : metricFormulaForDisplay}</div>{marginCalculationLines ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{marginCalculationLines.map((line, index) => <div key={`${mId}-calculation-${index}`}>{line}</div>)}</div> : metricLinesForDisplay.length ? <div className="mt-2 space-y-1 border-t border-emerald-100 pt-2">{metricLinesForDisplay.map((line, index) => <div key={`${mId}-${index}`}>{line}</div>)}</div> : <div className="mt-2 text-amber-800">원문에서 확인 필요</div>}{!marginCalculationLines && metricDisclaimerForDisplay && <div className="mt-2 text-amber-800">{metricDisclaimerForDisplay}</div>}</div>}
                       </div>
                     );
                   })}
@@ -1666,6 +1659,7 @@ export default function Home() {
 
 
 
+              <p className="text-xs font-medium text-slate-600">기업명 + 기간 + 지표 입력 필요</p>
               <div className="pt-2 flex flex-wrap items-center gap-2">
                 <span className="text-xs font-bold text-slate-500">질문 예시</span>
                 {["10개년 상반기 매출액", "2024~2025년 자본총계", "최근 3년 부채비율 추이", "2026년 상반기 차입금 의존도", "최근 4개년 영업이익률 비교"].map((sample) => (
@@ -1769,7 +1763,7 @@ export default function Home() {
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-extrabold text-slate-700" htmlFor="compare-year-choice">① 비교 연도</label>
                 <select id="compare-year-choice" value={compareYear} onChange={(e) => { setLiveCompareResults({}); setIsRefreshingCompare(true); setCompareYear(Number(e.target.value)); }} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">
-                  {Array.from({ length: new Date().getFullYear() - 2015 + 1 }, (_, i) => new Date().getFullYear() - i).map((year) => <option key={year} value={year}>{year}년</option>)}
+                  {Array.from({ length: new Date().getFullYear() - 2016 + 1 }, (_, i) => new Date().getFullYear() - i).map((year) => <option key={year} value={year}>{year}년</option>)}
                 </select>
               </div>
               <div className="flex flex-col gap-1">
@@ -1912,7 +1906,7 @@ export default function Home() {
             <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
               <h2 className="text-lg font-extrabold text-slate-900">결과값 비교</h2>
               <div className="overflow-x-auto">
-                <table className="w-full text-sm border-collapse border border-slate-200">
+                <table className="dart-results-table w-full text-sm border-collapse border border-slate-200">
                   <thead>
                     <tr className="bg-slate-100 text-slate-700 text-xs">
                       <th className="border border-slate-200 px-4 py-3 text-left">기업</th>
@@ -1950,10 +1944,10 @@ export default function Home() {
                             const serverRow = (liveCompareResults[mId] ?? []).find((row) => row.company === comp.corpName);
                             const hasValue = Boolean(serverRow?.found && serverRow.value !== null && Number.isFinite(serverRow.value));
                             return (
-                              <td key={mId} title={serverRow?.message || "실시간 공시 기준 조회 결과"} className="border border-slate-200 px-3 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
-                                <div>{hasValue ? formatMetricValue(serverRow!.value as number, mDef.unit) : !serverRow && isRefreshingCompare ? "조회 중…" : "확인 필요"}</div>
+                              <td key={mId} title="실시간 공시 기준 조회 결과" className="border border-slate-200 px-3 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
+                                <div>{hasValue ? formatMetricValue(serverRow!.value as number, mDef.unit) : !serverRow && isRefreshingCompare ? "조회 중…" : "수치 미검증"}</div>
                                 {hasValue && <div className="mt-1 text-[10px] font-normal text-emerald-700">{serverRow?.source || "DART"}</div>}
-                                {!hasValue && <div className="mt-1 max-w-[220px] whitespace-normal text-[10px] font-normal leading-relaxed text-amber-700">{serverRow?.message || (isRefreshingCompare ? "조회 중입니다." : "조회 결과를 확인하지 못했습니다. 새로고침해 주세요.")}</div>}
+                                {!hasValue && !isRefreshingCompare && <div className="mt-1 text-[10px] font-normal text-slate-500">원문에서 확인 필요</div>}
                               </td>
                             );
                           })}
@@ -1992,7 +1986,7 @@ export default function Home() {
           <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-extrabold text-slate-900">{alertDisplayCompany.corpName} 공시 현황</h2><p className="mt-1 text-xs text-slate-500">최근 6개월 접수 공시 · 최신순</p></div><div className="flex flex-wrap items-center gap-2"><label htmlFor="alert-view-company" className="text-xs font-semibold text-slate-600">기업 선택</label><select id="alert-view-company" aria-label="공시 현황 기업 선택" value={alertDisplayCompany.corpName} onChange={(e) => setAlertViewCompanyName(e.target.value)} className="max-w-[220px] rounded-lg border px-3 py-2 text-xs font-semibold">{companies.map((item) => <option key={item.corpName} value={item.corpName}>{item.corpName}</option>)}</select><button type="button" onClick={() => setCompanyFilingsRefreshNonce((n) => n + 1)} disabled={isLoadingCurrentFilings} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">{isLoadingCurrentFilings ? "조회 중…" : "새로고침"}</button></div></div>{displayedCompanyFilings.length ? <div className="divide-y divide-slate-100">{displayedCompanyFilings.slice(0, 20).map((filing) => <a key={filing.rceptNo} href={filing.url} target="_blank" rel="noreferrer" className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-emerald-50/50"><span className="w-[82px] text-xs tabular-nums text-slate-500">{filing.receiptDate.slice(0,4)}.{filing.receiptDate.slice(4,6)}.{filing.receiptDate.slice(6,8)}</span><span className="min-w-0 flex-1 text-sm font-semibold text-slate-800">{filing.reportName}</span><ExternalLink className="h-3.5 w-3.5 text-emerald-700" /></a>)}</div> : <div className="p-5 text-sm text-slate-500">{isLoadingCurrentFilings ? "DART 공시목록을 조회하고 있습니다…" : currentFilingsMessage}</div>}<p className="border-t border-slate-100 p-3 text-[11px] text-slate-500">{currentFilingsMessage} · 화면 활성 시 15초 간격 자동 확인</p></section>
         </section>}
 
-        {activeTab === "ONE_PAGER" && <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3 text-xs"><label>분기 조회 시작 연도 <select value={historyStartYear} onChange={e=>{setHistoryStartYear(Number(e.target.value));setHistoryEndYear(end=>Math.max(end,Number(e.target.value)));setHistoryLoadAttemptedFor("");}}>{Array.from({length:new Date().getFullYear()-2014},(_,i)=>2015+i).map(y=><option key={y}>{y}</option>)}</select></label><label>종료 연도 <select value={historyEndYear} onChange={e=>{setHistoryEndYear(Number(e.target.value));setHistoryLoadAttemptedFor("");}}>{Array.from({length:new Date().getFullYear()-historyStartYear+1},(_,i)=>historyStartYear+i).map(y=><option key={y}>{y}</option>)}</select></label><span role="status">{historyLoadMessage || "최근 3개년 기본 조회 · 2015년부터 선택 가능"}</span></div>}
+        {activeTab === "ONE_PAGER" && <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3 text-xs"><label>분기 조회 시작 연도 <select value={historyStartYear} onChange={e=>{setHistoryStartYear(Number(e.target.value));setHistoryEndYear(end=>Math.max(end,Number(e.target.value)));setHistoryLoadAttemptedFor("");}}>{Array.from({length:new Date().getFullYear()-2015},(_,i)=>2016+i).map(y=><option key={y}>{y}</option>)}</select></label><label>종료 연도 <select value={historyEndYear} onChange={e=>{setHistoryEndYear(Number(e.target.value));setHistoryLoadAttemptedFor("");}}>{Array.from({length:new Date().getFullYear()-historyStartYear+1},(_,i)=>historyStartYear+i).map(y=><option key={y}>{y}</option>)}</select></label><span role="status">{historyLoadMessage || "최근 3개년 기본 조회 · 2016년부터 선택 가능"}</span></div>}
         {activeTab === "ONE_PAGER" && (
           <div className="bg-[#faf9f5] text-stone-900 border border-stone-300 rounded-2xl p-6 md:p-8 space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-300 pb-4 print:hidden">
