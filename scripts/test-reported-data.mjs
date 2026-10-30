@@ -45,3 +45,30 @@ const fnTable=(id,dates,values)=>`<div>IFRS(연결) 단위: 억원</div><div id=
 test('금융업 보조자료 연간 표의 최신 반기 누적값은 1분기 열 없이도 읽음',()=>{const {load,engine:e}=fresh(),f=load('server/dart/fnGuideFallback.ts');const html=fnTable('divSonikY',['2023/12','2024/12','2025/12','2026/06'],[100,200,300,350]);assert.equal(f.extractFnGuideMetricFixture(html,'revenue',e.P(2026,'half'),'CFS').value,350);});
 test('누적 표에서 단독 2분기는 6월 누적에서 3월 누적을 차감하며 전기 열로 대체하지 않음',()=>{const {load,engine:e}=fresh(),f=load('server/dart/fnGuideFallback.ts');const html=fnTable('divSonikY',['2026/03','2026/06'],[150,350]);assert.equal(f.extractFnGuideMetricFixture(html,'revenue',e.P(2026,'half','qtr'),'CFS').value,200);assert.equal(f.extractFnGuideMetricFixture(fnTable('divSonikY',['2025/12','2026/06'],[300,350]),'revenue',e.P(2026,'half','qtr'),'CFS'),null);});
 test('누적 표와 분기 표가 같은 반기 금액을 제공하면 중복이 아닌 하나의 값으로 사용',()=>{const {load,engine:e}=fresh(),f=load('server/dart/fnGuideFallback.ts');const html=fnTable('divSonikY',['2024/12','2025/12','2026/06'],[200,300,350])+fnTable('divSonikQ',['2026/03','2026/06'],[150,200]);assert.equal(f.extractFnGuideMetricFixture(html,'revenue',e.P(2026,'half'),'CFS').value,350);});
+
+test('2025 1분기 연결 전체 순이익: 분기순이익(손실) 및 구형 IFRS 코드 인식, 지배주주 귀속액 제외',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[
+  {sj_div:'CIS',fs_div:'CFS',account_nm:'분기순이익(손실)',account_id:'ifrs_ProfitLoss',thstrm_amount:String(123.4*1e8)},
+  {sj_div:'CIS',fs_div:'CFS',account_nm:'지배기업 소유주에게 귀속되는 분기순이익',account_id:'ifrs-full_ProfitLossAttributableToOwnersOfParent',thstrm_amount:String(120*1e8)},
+  {sj_div:'CIS',fs_div:'OFS',account_nm:'당기순이익',account_id:'ifrs-full_ProfitLoss',thstrm_amount:String(90*1e8)}
+ ];
+ assert.equal(c.pickMetric(rows,e.P(2025,'q1'),'netIncome')?.value,123.4);
+});
+
+test('다양한 기업형 BS: 미발행 사채, 단기만, 장기만, 혼합, 유동성 전환사채, 리스 제외',()=>{
+ const {client:c,engine:e}=fresh();
+ const template=[['자산총계',1000],['부채총계',600],['자본총계',400],['유동자산',500],['유동부채',300],['재고자산',200],['현금및현금성자산',100],['매입채무',60],['기타금융부채',30]];
+ const cases=[
+  {name:'단기만', accounts:[['단기차입금',100]],expected:100},
+  {name:'장기만', accounts:[['장기차입금',200]],expected:200},
+  {name:'단기 장기 사채', accounts:[['단기차입금',100],['장기차입금',200],['회사채',50]],expected:350},
+  {name:'유동성전환사채', accounts:[['단기차입금',100],['유동성전환사채',50]],expected:150},
+  {name:'리스 미확인', accounts:[['단기차입금',100],['장기차입금',200]],expected:300},
+ ];
+ for(const sample of cases){
+  const rows=[...template,...sample.accounts,['유동리스부채',10],['비유동리스부채',40]].map(([n,v])=>({sj_div:'BS',fs_div:'CFS',source_type:'ALL',account_nm:n,thstrm_amount:String(v*1e8)}));
+  const result=c.pickMetric(rows,e.P(2025,'annual'),'borrowings');
+  assert.equal(result?.value,sample.expected,sample.name);
+ }
+});
