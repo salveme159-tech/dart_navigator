@@ -50,3 +50,20 @@ test('종목 현황과 비교분석은 유동자산·원천계정·차입금·�
 test('본문의 기타금융부채로 누락된 차입금은 같은 원문 주석의 합계와 리스로 보완',async()=>{const {client:c}=fresh(true);const calls=network({notes:true});const snapshot=await c.snapshotDart('검증전선',false,key,false,'CFS');assert.equal(snapshot.metrics.borrowings.value,300);assert.ok(Math.abs(snapshot.metrics.borrowingsRatio.value-300/1500*100)<1e-9);const comparison=await c.compareDart({companies:['검증전선'],metric:'borrowings',year,period:'half',basis:'CFS',includeValidation:false},key);assert.equal(comparison.rows[0].value,300);assert.ok(calls()>=0);});
 test('다른 연결·별도 주석으로 빈 차입금을 보정하지 않음',async()=>{const {client:c}=fresh(true);network({notes:true,noteScope:'별도'});const result=await c.compareDart({companies:['검증전선'],metric:'borrowings',year,period:'half',basis:'CFS',includeValidation:false},key);assert.equal(result.rows[0].found,true);assert.equal(result.rows[0].value,300);});
 test('비교분석의 네 공시 기간과 연결·별도에서 원천계정 조회, 하반기 요청은 거절',async()=>{const {client:c}=fresh();network();for(const basis of ['CFS','OFS'])for(const period of ['q1','half','q3','annual']){const result=await c.compareDart({companies:['검증전선'],metric:'currentAssets',year,period,basis,includeValidation:false},key);assert.equal(result.rows[0].value,500);assert.match(result.rows[0].basis,basis==='CFS'?/연결/:/별도/);}await assert.rejects(c.compareDart({companies:['검증전선'],metric:'revenue',period:'h2',year,basis:'CFS'},key),/1분기·상반기·3분기·연간/);});
+
+test('리스 제외: 비유동 차입금 계정코드와 유동성 전환사채를 중복 없이 인식',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[...balance().filter(r=>!['단기차입금','장기차입금'].includes(r.account_nm)),
+ row('단기차입금',100,{account_id:'-표준계정코드 미사용-'}),
+ row('장기차입금',200,{account_id:'ifrs-full_NoncurrentPortionOfNoncurrentLoansReceived'}),
+ row('유동성전환사채',30,{account_id:'dart_CurrentPortionOfConvertibleBonds'})];
+ assert.equal(c.pickMetric(rows,e.P(year,'half'),'borrowings').value,330);
+ assert.equal(c.pickMetric(rows,e.P(year,'half'),'borrowingsRatio').value,22);
+});
+
+test('리스 제외: 사채 미발행은 누락으로 판정하지 않지만 미분류 차입금은 차단',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=balance().filter(r=>!['유동리스부채','비유동리스부채'].includes(r.account_nm));
+ assert.equal(c.pickMetric(rows,e.P(year,'half'),'borrowings').value,300);
+ assert.equal(Number.isFinite(c.pickMetric([...rows,row('미분류차입금',50)],e.P(year,'half'),'borrowings').value),false);
+});
