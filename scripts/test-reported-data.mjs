@@ -98,3 +98,24 @@ test('운전자본: 연결 계정코드로 매출채권·재고·매입채무 �
  assert.match(value.formula,/유동매입채무및기타채무/);
  assert.equal(c.pickMetric(rows.filter(r=>r.account_nm!=='유동매입채무및기타채무'),e.P(2025,'q1'),'workingCapital'),null);
 });
+
+
+test('추가 분기 계정명: 연결 순이익 변형은 선택하되 지배주주 귀속 이익은 제외',()=>{
+ const {client:c,engine:e}=fresh();
+ const rows=[
+  {sj_div:'CIS',fs_div:'CFS',account_nm:'연결분기순이익(손실)',thstrm_amount:String(43e8)},
+  {sj_div:'CIS',fs_div:'CFS',account_nm:'지배기업귀속분기순이익',thstrm_amount:String(39e8)},
+ ];
+ assert.equal(c.pickMetric(rows,e.P(2025,'q1'),'netIncome')?.value,43);
+});
+
+test('추가 중간보고서 매출채권·매입채무 명칭 변형을 같은 CFS 기준으로 인식',()=>{
+ const {client:c,engine:e}=fresh();
+ const base={sj_div:'BS',fs_div:'CFS',source_type:'ALL'};
+ const rows=[
+  {...base,account_nm:'매출채권및기타수취채권',thstrm_amount:String(600e8)},
+  {...base,account_nm:'재고자산',thstrm_amount:String(250e8)},
+  {...base,account_nm:'매입채무및기타지급채무',thstrm_amount:String(180e8)},
+ ];
+ assert.equal(c.pickMetric(rows,e.P(2025,'half'),'workingCapital')?.value,670);
+});
