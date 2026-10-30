@@ -27,7 +27,7 @@ const textOf = (html: string) => decode(html
   .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
   .replace(/<[^>]*>/g, " "))
   .replace(/[\s\u00a0]+/g, " ").trim();
-const normalize = (value: string) => textOf(value).replace(/[\s·ㆍ()（）:：]/g, "");
+const normalize = (value: string) => textOf(value).replace(/[\s·ㆍ()（）：:]/g, "");
 
 function parseAmount(raw: string, unit: string): number | null {
   let valueText = textOf(raw).replace(/[\s,\u00a0]/g, "").replace(/−/g, "-");
@@ -80,22 +80,101 @@ function targetMonth(period: Period): number {
   return period.kind === "annual" ? 12 : period.kind === "half" ? 6 : period.kind === "q1" ? 3 : 9;
 }
 function isPriorHeader(value: string): boolean {
-  return /전기|전년도|전반기|전분기|전년|기초|비교기간|previous|prior/i.test(value);
+  const compact = (value ?? "").replace(/[\s\u200b-\u200d\ufeff]/g, "");
+  return /전기|전년도|전반기|전분기|전년|기초|비교기간|\(전\)|previous|prior/i.test(compact);
 }
+
+/**
+ * 머리글이나 문맥에 명시된 날짜(YYYY.MM)를 추출하여 목표 보고기간의 종료 연월과 일치하는지/충돌하는지 검증합니다.
+ */
+function matchesExplicitTargetDate(value: string, period: Period): boolean {
+  const month = targetMonth(period);
+  const datePattern = new RegExp(`${period.year}\\s*[./년-]\\s*0?${month}(?:\\s*[./월-]\\s*\\d{1,2}\\s*일?|\\s*월|\\s*일|\\b)`, "i");
+  return datePattern.test(value);
+}
+
+function hasConflictingDateOrKind(value: string, period: Period): boolean {
+  const compact = normalize(value);
+  const month = targetMonth(period);
+  const explicitDates = [...value.matchAll(/(20\d{2})\s*[./년-]\s*(0?[1-9]|1[0-2])(?:\s*[./월-]\s*\d{1,2}|\s*월|\b)/g)];
+  if (explicitDates.length > 0) {
+    const anyMatch = explicitDates.some((m) => Number(m[1]) === period.year && Number(m[2]) === month);
+    if (!anyMatch) return true;
+  }
+  if (period.kind === "annual" && /반기|분기|3개월|6개월|9개월/.test(compact)) return true;
+  if (period.kind === "half" && /1분기|3분기|9개월/.test(compact)) return true;
+  if ((period.kind === "q1" || period.kind === "q3") && /반기|6개월/.test(compact)) return true;
+  return false;
+}
+
+/**
+ * '제 51 기말 | 제 50 기말'처럼 회차(제N기)를 쓰는 머리글에서 당기 열을 선택하되,
+ * 정정공시·비교재무제표·분기 누적기간 혼재를 막기 위해 보고기간의 실제 종료일과 원문 표 기준일을 대조합니다.
+ */
+function ordinalCurrentColumns(headers: string[], period?: Period, tableContextText = ""): number[] {
+  const ordinals = headers.map((header, index) => {
+    if (index <= 0 || isPriorHeader(header)) return null;
+    if (period && hasConflictingDateOrKind(header, period)) return null;
+    const m = (header ?? "").replace(/\s/g, "").match(/제(\d+)(?:\((?:당|전)\))?기/);
+    return m ? { index, n: Number(m[1]), header } : null;
+  }).filter((item): item is { index: number; n: number; header: string } => item !== null);
+  if (new Set(ordinals.map((item) => item.n)).size < 2) return [];
+
+  if (period) {
+    const dateMatched = ordinals.filter((item) => matchesExplicitTargetDate(item.header, period));
+    if (dateMatched.length > 0) {
+      return dateMatched.map((item) => item.index);
+    }
+    if (tableContextText && hasConflictingDateOrKind(tableContextText, period) && !matchesExplicitTargetDate(tableContextText, period)) {
+      return [];
+    }
+  }
+
+  const latest = Math.max(...ordinals.map((item) => item.n));
+  return ordinals.filter((item) => item.n === latest).map((item) => item.index);
+}
+
 function isCurrentHeader(value: string, period: Period): boolean {
   if (isPriorHeader(value)) return false;
+  if (hasConflictingDateOrKind(value, period)) return false;
   const compact = normalize(value);
-  const datePattern = new RegExp(`${period.year}\\s*[./년-]\\s*0?${targetMonth(period)}(?:\\s*월|\\s*일|\\b)`, "i");
-  if (datePattern.test(value)) return true;
+  if (matchesExplicitTargetDate(value, period)) return true;
+  if (/\(당\)/.test(value.replace(/\s/g, ""))) return true;
   if (period.kind === "annual") return /당기말|당기|당연도|기말|당해연도/.test(compact);
   if (period.kind === "half") return /당반기말|당반기|당기말|당기|반기말/.test(compact) && !/3개월/.test(compact);
   if (period.kind === "q1") return /당분기말|당분기|당기말|당기|분기말/.test(compact) && !/반기/.test(compact);
   return /당분기말|당분기|당기말|당기|분기말/.test(compact) && !/반기/.test(compact);
 }
 
-// DART XBRL notes often put "당반기말 (단위: 천원)" above a two-column
-// table whose only numeric header is "공시금액". The period belongs to the
-// table, rather than the header cell; never carry a prior-period heading over.
+function selectTargetColumns(headers: string[], period: Period, beforeContext: string): Array<{ header: string; index: number }> {
+  // Date-bearing headers must map to ONE period. A merged header with both
+  // current and prior dates cannot establish which numeric column is current.
+  const datesOf = (text: string) => [...text.matchAll(/(20\d{2})\s*[./년-]\s*(0?[1-9]|1[0-2])(?=\D|$)/g)]
+    .map(m => `${Number(m[1])}-${Number(m[2])}`);
+  const target = `${period.year}-${targetMonth(period)}`;
+  const headerSafe = (header: string) => {
+    const dates = datesOf(header);
+    return !isPriorHeader(header) && !hasConflictingDateOrKind(header, period)
+      && (!dates.length || (new Set(dates).size === 1 && dates[0] === target));
+  };
+  const columns = headers.map((header, index) => ({header,index})).filter(col => col.index > 0 && headerSafe(col.header));
+  const explicit = columns.filter(col => datesOf(col.header).length > 0);
+  if (explicit.length === 1) return explicit;
+  if (explicit.length > 1) return []; // Ambiguous duplicate date headers.
+  // Context with several dates is comparison-period context, not proof of
+  // the current column. Require a uniquely labelled current header.
+  const contextDates = datesOf(beforeContext.slice(-400));
+  const contextAmbiguous = new Set(contextDates).size > 1;
+  const named = columns.filter(col => isCurrentHeader(col.header,period));
+  if (named.length === 1 && !contextAmbiguous) return named;
+  if (named.length > 1) return [];
+  if (contextAmbiguous) return [];
+  const ordinal = ordinalCurrentColumns(headers, period, beforeContext.slice(-400));
+  if (ordinal.length !== 1) return [];
+  const selected = columns.find(col => col.index === ordinal[0]);
+  return selected ? [selected] : [];
+}
+
 function tablePeriodContext(before: string): string {
   const markers = [...textOf(before).matchAll(/(?:당|전)(?:반기|분기|기)(?:말)?|20\d{2}[.\-/년]\s*\d{1,2}(?:[.\-/월]\s*\d{1,2})?/g)];
   return markers.at(-1)?.[0] ?? "";
@@ -115,7 +194,6 @@ export function disclosureEntriesForBasis(entries: HtmlEntry[], basis?:"CFS"|"OF
         if(scope===basis)scoped.push({name:entry.name,text:entry.text.slice(headings[i].index,headings[i+1]?.index ?? entry.text.length)});
       }
     } else if((basis==="CFS" && /연결|consolidated/i.test(entry.name)) || (basis==="OFS" && /별도|separate/i.test(entry.name))) scoped.push(entry);
-    // Unknown basis is not evidence that a note matches the selected statement.
   }
   return scoped;
 }
@@ -127,17 +205,12 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
     const tableMatches = [...entry.text.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)];
     for (const tableMatch of tableMatches) {
       const tableHtml = tableMatch[0];
-      // 주석 제목·단위 문구가 표의 바로 앞에 놓이지 않고 몇 단락 앞에 있을 수 있어
-      // 직전 1,500자 전체와 표 자체를 문맥으로 사용합니다.
       const before = entry.text.slice(Math.max(0, (tableMatch.index ?? 0) - 2500), tableMatch.index ?? 0);
       const tablePlain = textOf(tableHtml);
       const fullContext = `${textOf(before)} ${tablePlain}`;
-      // 만기분석·미할인 리스료는 부채 장부금액이 아니므로 합산 대상에서 제외합니다.
       if (/리스부채|lease liabilities/i.test(fullContext) === false) continue;
       const immediateContext = `${textOf(before.slice(-300))} ${tablePlain}`;
       if (/만기분석|만기분석표|미할인.*리스|리스료.*만기|계약상현금흐름/i.test(immediateContext)) continue;
-      // 표 안에 단위가 있으면 그것을 우선하고, 없으면 표와 가까운 문맥의 마지막 단위 표기를 사용합니다.
-      // 이전 주석 표의 단위까지 모두 모아 불필요하게 거절하지는 않습니다.
       const unitSearch = `${before.slice(-700)} ${tableHtml}`;
       const unitMatches = [...unitSearch.matchAll(/단위\s*[:：]?\s*(천원|백만원|억원|원)(?![가-힣])/gi)];
       const unit = unitMatches.at(-1)?.[1];
@@ -146,7 +219,7 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
       if (rows.length < 2) continue;
       const width = Math.max(...rows.map((row) => row.length));
       const headers = Array.from({ length: width }, (_, column) => rows.slice(0, Math.min(8, rows.length)).map((row) => row[column] ?? "").join(" "));
-      const targetColumns = headers.map((header, index) => ({ header, index })).filter(({ header, index }) => index > 0 && isCurrentHeader(header, period));
+      const targetColumns = selectTargetColumns(headers, period, before);
       if (!targetColumns.length && width === 2 && isCurrentHeader(tablePeriodContext(before),period)) targetColumns.push({header:tablePeriodContext(before),index:1});
       if (!targetColumns.length) continue;
       const currentValues: number[] = [];
@@ -154,8 +227,6 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
       const totalValues: number[] = [];
       for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
         const cells = rows[rowIndex];
-        // 행 이름은 숫자 열과 분리합니다. 기존처럼 첫 2~3개 셀을 라벨로 붙이면
-        // '리스부채 5,560 5,800' 전체가 계정명으로 오인되어 숫자를 못 찾을 수 있습니다.
         const labelParts: string[] = [];
         for (const rawCell of cells.slice(0, Math.min(4, cells.length))) {
           const cellText = textOf(rawCell);
@@ -171,7 +242,6 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
         const noncurrentRow = /비유동.*리스|리스.*비유동|장기리스부채|^(?:비유동|비유동성)$/i.test(rowLabel);
         const totalRow = namesLease && !currentRow && !noncurrentRow && !/기초|추가|상환|감소|이자|변동|증가/.test(rowLabel) && /합계|총계|장부금액|기말금액|리스부채$|리스부채합계/.test(rowLabel);
         if (!currentRow && !noncurrentRow && !totalRow) continue;
-        // 행 자체가 '리스부채'이고 열 제목에 유동/비유동이 있는 구조를 지원합니다.
         for (const { header, index } of targetColumns) {
           const cell = cells[index] ?? "";
           const value = parseAmount(cell, unit) ?? (/^[-—–－−]$/.test(textOf(cell)) ? 0 : null);
@@ -186,7 +256,6 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
       const currents = unique(currentValues);
       const noncurrents = unique(noncurrentValues);
       const totals = unique(totalValues);
-      // 같은 표 안에서 기간·유동성 분류를 확인할 수 있고, 중복 계정 후보가 하나로 결정될 때만 사용합니다.
       if (currents.length > 1 || noncurrents.length > 1 || totals.length > 1) continue;
       const current = currents.length === 1 ? currents[0] : null;
       const noncurrent = noncurrents.length === 1 ? noncurrents[0] : null;
@@ -197,7 +266,6 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
         if (explicitTotal !== null && Math.abs(explicitTotal - componentsTotal) > Math.max(0.5, componentsTotal * 0.01)) continue;
         total = explicitTotal ?? componentsTotal;
       } else if (total === null && (current !== null || noncurrent !== null)) {
-        // 유동 또는 비유동 중 하나만 발견된 경우 합계를 만들면 과소계산될 수 있어 거절합니다.
         continue;
       }
       if (total === null || !Number.isFinite(total) || total < 0) continue;
@@ -214,7 +282,6 @@ export function parseLeaseLiabilitiesFromDisclosure(entries: HtmlEntry[], period
   if (!candidates.length) return null;
   const distinctTotals = [...new Set(candidates.map((candidate) => candidate.total.toFixed(6)))];
   if (distinctTotals.length !== 1) return null;
-  // 서로 다른 주석 표가 같은 값을 반복하는 경우 중복을 합산하지 않습니다.
   const selected = candidates[0];
   return { ...selected };
 }
@@ -232,12 +299,14 @@ export function parseBorrowingTotalFromDisclosure(entries: HtmlEntry[], period: 
       const rows = expandTableRows(match[0]);
       const width = Math.max(0, ...rows.map(row => row.length));
       const headers = Array.from({length:width}, (_, col) => rows.slice(0, 5).map(row => row[col] ?? "").join(" "));
+      const targetColumns = selectTargetColumns(headers, period, before);
+      const currentByHeader = headers.map((_header, col) => col > 0 && targetColumns.some(tc => tc.index === col));
       for (const cells of rows) {
         const label = normalize(cells[0] ?? "");
         const includesLease = /^(?:총차입금|차입금및사채).*리스(?:부채)?포함$/.test(label);
         if (!includesLease && !/^(?:차입금및사채|차입금및회사채|차입금과사채)(?:합계|총계)?$/.test(label)) continue;
-        const values = headers.flatMap((header, col) => {
-          if (col === 0 || !isCurrentHeader(header, period)) return [];
+        const values = headers.flatMap((_header, col) => {
+          if (col === 0 || !currentByHeader[col]) return [];
           const cell = cells[col] ?? "";
           const value = parseAmount(cell, unit) ?? (/^[-—–－−]$/.test(textOf(cell)) ? 0 : null);
           return value !== null && value >= 0 ? [value] : [];
@@ -284,14 +353,16 @@ function depreciationPeriodScore(header: string, period: Period): number {
   const h = textOf(header).replace(/[\s·ㆍ]/g, "");
   if (!h) return 0;
   if (/전기|전반기|전분기|전년도|전년동기|비교기간|previous|prior/i.test(h)) return 0;
+  if (hasConflictingDateOrKind(header, period)) return 0;
   const month = targetMonth(period);
-  const hasTargetDate = new RegExp(`${period.year}\\s*[./년-]\\s*0?${month}(?:\\s*월|\\s*일|\\b)`, "i").test(h);
+  const hasTargetDate = matchesExplicitTargetDate(header, period);
   const threeMonth = /3개월|당분기|당기분기|3month/i.test(h);
   const cumulative = /당반기.*(?:누적|합계)?|상반기.*누적|당기누적|누적|6개월|9개월|9month|6month/i.test(h) && !threeMonth;
 
   if (period.kind === "annual") {
+    if (hasTargetDate && month === 12 && !/3개월|반기|분기/.test(h)) return 105;
     if (/(?:당기|당해|당연도|제\d+기)/.test(h) && !/3개월|반기|분기|누적|9개월|6개월/.test(h)) return 100;
-    return hasTargetDate && month === 12 && !/3개월|반기|분기/.test(h) ? 70 : 0;
+    return 0;
   }
   if (period.kind === "half") {
     if (period.mode === "qtr") {
@@ -300,13 +371,13 @@ function depreciationPeriodScore(header: string, period: Period): number {
       return hasTargetDate ? 40 : 0;
     }
     if (cumulative) return 100;
-    if (hasTargetDate && !threeMonth) return 75;
+    if (hasTargetDate && !threeMonth) return 85;
     if (/당반기|상반기/.test(h) && !threeMonth) return 65;
     return 0;
   }
   if (period.kind === "q1") {
     if (/당분기|당기분기|1분기|3개월/.test(h)) return 100;
-    return hasTargetDate ? 70 : 0;
+    return hasTargetDate ? 80 : 0;
   }
   if (period.kind === "q3") {
     if (period.mode === "qtr") {
@@ -314,7 +385,7 @@ function depreciationPeriodScore(header: string, period: Period): number {
       return hasTargetDate ? 65 : 0;
     }
     if (/당기누적|누적|9개월|당기.*누적/.test(h) && !threeMonth) return 100;
-    if (hasTargetDate && !threeMonth) return 75;
+    if (hasTargetDate && !threeMonth) return 80;
     return 0;
   }
   return hasTargetDate ? 60 : 0;
@@ -368,9 +439,8 @@ export function parseDepreciationFromDisclosure(entries: HtmlEntry[], period: Pe
       const scoredColumns = headers.map((header, index) => ({ index, score: depreciationPeriodScore(header, period) })).filter((candidate) => candidate.index > 0 && candidate.score > 0).sort((a, b) => b.score - a.score);
       let amountCol = scoredColumns[0]?.index ?? -1;
       if (amountCol < 0) {
-        // 헤더가 비표준인 경우에도 표 안에 기간 표시가 있고 각 데이터 행에 숫자 열이 하나일 때만 사용합니다.
         const visible = textOf(tableHtml);
-        if (!/당기|당반기|당분기|당해|누적|20\d{2}\s*[./년-]\s*0?\d{1,2}/.test(visible) || avoidPrior.test(visible)) continue;
+        if (!/당기|당반기|당분기|당해|누적|20\d{2}\s*[./년-]\s*0?\d{1,2}/.test(visible) || avoidPrior.test(visible) || hasConflictingDateOrKind(visible, period)) continue;
       }
       const numeric = (raw: string) => parseAmountForUnit(raw, unit);
       const rows = rawRows.map((row) => {
