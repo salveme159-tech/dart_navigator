@@ -476,6 +476,8 @@ function grossBorrowingComponents(rows: Row[]): { items: GrossBorrowingComponent
   // invalidate the separately disclosed loan/bond accounts or be added wholesale.
   // Leases are independently verified in the body or the same report's notes.
   const reportedScopeComplete = fullBalanceSheet && coreFound > 0 && !unmatchedBorrowing;
+  // The absence of a separately disclosed loan/bond class is not itself an error.
+  // Unmatched borrowing rows still block confirmation to avoid understated totals.
   // '차입금및사채'처럼 차입금과 사채를 한 줄로 묶어 공시하는 계정(구성 계정이 따로 없을 때만 합계로 사용).
   const combinedRow = bsRows.find((row) => /^(?:차입금및사채|차입금및회사채|차입금과사채|차입금및사채합계)$/.test(normalize(row.account_nm)) && (() => { const v = amountOf(row); return v !== null && Number.isFinite(v); })()) ?? null;
   return {
@@ -557,6 +559,13 @@ function revenueFromOperatingCosts(rows:Row[],period:Period):PickedMetric|null {
 }
 
 export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric): PickedMetric | null {
+  if (metric === "netIncome" && period.kind === "q1") {
+    const basis = rows.find(row => row.fs_div)?.fs_div === "OFS" ? "OFS" : "CFS";
+    const selected = selectAccount(rows, "순이익", period, basis);
+    if (selected) return { value: selected.value, unit: "억원",
+      lines: [`원천 계정: ${selected.row.account_nm}`], formula: null,
+      disclaimer: null, sourceHeading: `손익계산서 > ${selected.row.account_nm}` };
+  }
   if (metric === "payables") return pickDirectAccount(rows, period, "매입채무");
   if (metric === "borrowings" || metric === "borrowingsRatio") {
     return pickGrossBorrowingMetric(rows, period, metric);
