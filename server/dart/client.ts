@@ -865,9 +865,7 @@ export function pickMetric(rows: Row[], period: Period, metric: FinancialMetric)
   const config = metricConfig[metric];
   const row = metric === "revenue"
     ? findRevenueRow(rows, config.sj, period)
-    : metric === "netIncome"
-      ? (findRowLike(rows, ["CIS", "IS"], ["반기순손익", "분기순손익", "당기순이익", "당기순이익(손실)", "연결당기순이익"]) ?? findRowLike(rows, config.sj, config.names))
-      : findRowLike(rows, config.sj, config.names, period);
+    : findRowLike(rows, config.sj, config.names, period);
   const isFlowStatement = config.sj.some((statement) => ["IS", "CIS", "CF"].includes(statement));
   const value = row ? periodAmount(row, period) : null;
   if (!row || value === null) return null;
