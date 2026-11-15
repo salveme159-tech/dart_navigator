@@ -441,7 +441,7 @@ export default function Home() {
         ? `실시간 DART 조회 완료: ${loaded.length}/${initialNames.length}개 등록 기업(상장·비상장 포함). ${failures.length ? `미조회: ${failures.join(" / ")}` : "실제 공시 조회를 완료했습니다."}`
         : initialNames.length
           ? `등록된 DART 기업의 공시 조회에 실패했습니다. 임의 수치를 표시하지 않았습니다. ${failures.join(" / ")}`
-          : "등록된 종목이 없습니다. 종목 현황에서 ‘기업 검색’를 눌러 등록하세요.");
+          : "등록된 종목이 없습니다. 기업 현황에서 ‘기업 검색’를 눌러 등록하세요.");
     })().catch((err) => {
       if (!cancelled) {
         setIsRefreshingApi(false);
@@ -451,7 +451,7 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [apiKey, isApiGateOpen]);
 
-  // 메뉴 탭: 종목 현황·질문하기·비교분석·요약 보고서·공시 알림 및 최신 현황
+  // 메뉴 탭: 기업 현황·질문하기·비교분석·요약 보고서·공시 알림 및 최신 현황
   const [activeTab, setActiveTab] = useState<
     "DASHBOARD" | "ASK" | "COMPARE" | "ONE_PAGER" | "ALERTS"
   >("DASHBOARD");
@@ -566,7 +566,7 @@ export default function Home() {
     [companies, alertViewCompanyName, currentCompany]
   );
   const displayedCompanyFilings=currentCompanyFilings.filter(row=>row.company===alertDisplayCompany.corpName);
-  // 공시 알람의 공시 현황은 종목 현황 탭의 선택과 독립적으로 기업을 바꿔 조회할 수 있습니다.
+  // 공시 알람의 공시 현황은 기업 현황 탭의 선택과 독립적으로 기업을 바꿔 조회할 수 있습니다.
   useEffect(() => {
     if (!apiKey || isApiGateOpen || !alertDisplayCompany.corpCode || alertDisplayCompany.corpName === "DART 조회 대기") {
       setCurrentCompanyFilings([]);
@@ -1281,7 +1281,7 @@ export default function Home() {
               }`}
             >
               <LayoutDashboard className="w-4 h-4" />
-              종목 현황
+              기업 현황
             </button>
 
             <button
@@ -1345,13 +1345,13 @@ export default function Home() {
       {/* 우측 본문 (상단 헤드 DART FACT-CHECKER 및 OpenDART 연결됨 버튼 삭제 완료) */}
       <main className="flex-1 p-6 md:p-8 max-w-6xl mx-auto w-full space-y-6">
         {/* ====================================================================
-            [탭 1] 첫 화면: 종목 현황
+            [탭 1] 첫 화면: 기업 현황
            ==================================================================== */}
         {activeTab === "DASHBOARD" && (
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h1 className="text-2xl font-extrabold text-slate-900">종목 현황</h1>
+                <h1 className="text-2xl font-extrabold text-slate-900">기업 현황</h1>
 
               </div>
 
@@ -1418,7 +1418,7 @@ export default function Home() {
                   <span className="text-emerald-300 underline underline-offset-4">
                     {currentCompany.corpName}
                   </span>{" "}
-                  종목 현황
+                  기업 현황
                 </div>
                 <div className="text-xs text-emerald-100/80">{currentCompany.period}</div>{currentCompany.dataNotice && <p role="status" className="text-xs text-amber-200">{currentCompany.dataNotice}</p>}
               </div>
